@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { newCursor, readAppended, readJson } from '../jsonl.js';
-import { agyProcesses, paneKeyOf } from '../proc.js';
+import { agyProcesses, paneKeyOf, processCwds } from '../proc.js';
 import { pendingTextQuestion } from '../textQuestion.js';
 import { TURN_GAP_MS, gapIntervals, mergeIntervals, subtractIntervals } from '../work.js';
 
@@ -385,6 +385,65 @@ function newestSavedStatusline() {
   return best;
 }
 
+// 会話 ID の分からない agy プロセス(`agy -c` や引数なしで起動したもの)が動かしている会話を、
+// statusline の保存ファイルから推定する。agy は起動時と作業中に statusline を呼ぶので、
+// プロセスの開始後に保存された会話を、そのプロセスの会話の候補とする。取り違えるより割り当てない方を選ぶ。
+//   - 候補から除くもの: --conversation で分かっている会話(taken)、--conversation のプロセスが
+//     その保存の時刻以降にも動かしていた会話(argSeen)、作業ディレクトリが違う会話(プロセスの作業ディレクトリが取れたとき)
+//   - 開始時刻が取れないプロセスは、UNKNOWN_START_WINDOW_MS 以内に保存された会話だけを候補にする
+//   - 各プロセスには候補のうち最新の会話を割り当てる。その会話が複数のプロセスの候補なら(曖昧なので)割り当てない
+// unknown: [{pid, startedAt, cwd}](cwd は取れなければ null)。戻り値: Map(会話 ID → pid)
+const UNKNOWN_START_WINDOW_MS = 10 * 60_000;
+// --conversation のプロセスが動かしていた会話 → 最後に確認した時刻
+const ARG_SEEN_TTL_MS = 24 * 3600_000;
+const argSeen = new Map();
+
+function realDir(dir) {
+  if (typeof dir !== 'string' || !dir) return null;
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+function assignByStatusline(unknown, taken, now) {
+  const out = new Map();
+  if (!unknown.length) return out;
+  const floorOf = (p) => (p.startedAt != null ? p.startedAt : now - UNKNOWN_START_WINDOW_MS);
+  const oldest = Math.min(...unknown.map(floorOf));
+  let names;
+  try {
+    names = fs.readdirSync(SAVE_DIR).filter((n) => n.endsWith('.json'));
+  } catch {
+    return out;
+  }
+  // capturedAt はファイルの mtime を超えないので、mtime が最も古い下限より前のファイルは読まずに除く
+  const saved = [];
+  for (const n of names) {
+    const id = n.slice(0, -5);
+    if (!/^[\w-]+$/.test(id) || taken.has(id)) continue;
+    const file = path.join(SAVE_DIR, n);
+    const st = statOf(file);
+    if (!st?.isFile() || st.mtimeMs < oldest) continue;
+    const input = readJson(file);
+    const at = typeof input?.capturedAt === 'number' ? input.capturedAt : st.mtimeMs;
+    if ((argSeen.get(id) ?? -Infinity) >= at) continue; // この保存は --conversation のプロセスによるもの
+    saved.push({ id, at, dir: realDir(input?.workspace?.current_dir ?? input?.cwd) });
+  }
+  const candidates = unknown.map((p) => {
+    const dir = realDir(p.cwd);
+    return saved.filter((c) => c.at >= floorOf(p) && (dir == null || c.dir === dir));
+  });
+  const count = new Map();
+  for (const cs of candidates) for (const c of cs) count.set(c.id, (count.get(c.id) ?? 0) + 1);
+  unknown.forEach((p, i) => {
+    const best = candidates[i].reduce((a, c) => (!a || c.at > a.at ? c : a), null);
+    if (best && count.get(best.id) === 1) out.set(best.id, p.pid);
+  });
+  return out;
+}
+
 // 使用枠に使う「最新の入力」。last_statusline_input.json が無いか、statusline-save.js --agy が
 // 保存したものの方が新しければ、そちらを使う(同じ時刻なら last_statusline_input.json)
 function latestStatusline(errors) {
@@ -483,7 +542,7 @@ function buildChild(id, brain, cache, sum, now) {
   };
 }
 
-function buildSession(id, brain, cache, sum, pid, now, children = []) {
+function buildSession(id, brain, cache, sum, pid, now, children = [], liveBy = null) {
   const st = derive(cache?.state ?? newState());
   const sl = savedStatusline(id);
   const live = pid != null;
@@ -554,6 +613,7 @@ function buildSession(id, brain, cache, sum, pid, now, children = []) {
     updatedAt,
     status,
     live,
+    liveBy: live ? liveBy : null, // 'arg': --conversation で分かった / 'statusline': 保存ファイルから推定した
     pid: pid ?? null,
     context,
     events: {
@@ -571,19 +631,35 @@ function buildSession(id, brain, cache, sum, pid, now, children = []) {
   };
 }
 
-export async function collect({ since = 0 } = {}) {
+// processes はテスト用(agyProcesses() の代わりに使うプロセス一覧。各要素に cwd を入れると作業ディレクトリの取得を省く)
+export async function collect({ since = 0, processes } = {}) {
   const now = Date.now();
   const errors = [];
-  const procs = await agyProcesses();
+  const procs = processes ?? (await agyProcesses());
+  const unknownProcs = procs.filter((p) => !p.conversationId);
+  const needCwd = unknownProcs.filter((p) => p.cwd === undefined).map((p) => p.pid);
+  const cwds = await processCwds(needCwd);
+  const unknown = unknownProcs.map((p) => ({ ...p, cwd: p.cwd !== undefined ? p.cwd : (cwds.get(p.pid) ?? null) }));
   const livePid = new Map();
+  const liveBy = new Map(); // 会話 ID → 'arg' | 'statusline'
   const pidStart = new Map(); // pid → プロセス開始時刻(ms)
   for (const p of procs) {
-    if (p.conversationId) livePid.set(p.conversationId, p.pid);
+    if (p.conversationId) {
+      livePid.set(p.conversationId, p.pid);
+      liveBy.set(p.conversationId, 'arg');
+      argSeen.set(p.conversationId, now);
+    }
     pidStart.set(p.pid, p.startedAt);
   }
 
   // ここから先はキャッシュを触るので await を挟まない
+  // (last_statusline_input.json の写しを先に保存してから、会話 ID の分からないプロセスを対応づける)
   const latest = latestStatusline(errors);
+  for (const [id, at] of argSeen) if (now - at > ARG_SEEN_TTL_MS) argSeen.delete(id);
+  for (const [id, pid] of assignByStatusline(unknown, new Set(livePid.keys()), now)) {
+    livePid.set(id, pid);
+    liveBy.set(id, 'statusline');
+  }
   const sums = summaries(errors);
   const brains = scanBrains();
 
@@ -643,7 +719,7 @@ export async function collect({ since = 0 } = {}) {
     const cached = [id, ...kids].some((k) => brains.get(k)?.transcript && fileCache.has(brains.get(k).transcript));
     if (!live && newest < since && !cached) continue;
     const children = kids.map((k) => buildChild(k, brains.get(k), load(brains.get(k)), sums.get(k), now));
-    sessions.push(buildSession(id, b, load(b), sum, livePid.get(id), now, children));
+    sessions.push(buildSession(id, b, load(b), sum, livePid.get(id), now, children, liveBy.get(id) ?? null));
   }
 
   // 今回列挙されなかったファイルのキャッシュは捨てる

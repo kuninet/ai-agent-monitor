@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -128,6 +129,54 @@ export async function agyProcesses() {
   } catch {
     return [];
   }
+}
+
+// lsof -F の n フィールドは、C ロケールでは ASCII 以外や制御文字を \xNN や \n などで書くので、元のバイト列に戻す
+function unescapeLsof(s) {
+  const bytes = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && s[i + 1] === 'x' && /^[0-9a-fA-F]{2}$/.test(s.slice(i + 2, i + 4))) {
+      bytes.push(parseInt(s.slice(i + 2, i + 4), 16));
+      i += 3;
+    } else if (c === '\\' && 'bfnrt\\'.includes(s[i + 1] ?? '')) {
+      bytes.push({ b: 8, f: 12, n: 10, r: 13, t: 9, '\\': 92 }[s[i + 1]]);
+      i += 1;
+    } else {
+      bytes.push(...Buffer.from(c, 'utf8'));
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+// 複数 pid の作業ディレクトリ。macOS は lsof を 1 回、Linux は /proc/<pid>/cwd。取れない pid は含めない(Windows は常に空)
+export async function processCwds(pids) {
+  const out = new Map();
+  if (!pids.length || WIN) return out;
+  if (process.platform === 'linux') {
+    for (const pid of pids) {
+      try {
+        out.set(pid, fs.readlinkSync(`/proc/${pid}/cwd`));
+      } catch {}
+    }
+    return out;
+  }
+  let stdout = '';
+  try {
+    ({ stdout } = await run('lsof', ['-a', '-d', 'cwd', '-Fpn', '-p', pids.join(',')], {
+      env: { ...process.env, LC_ALL: 'C' },
+      timeout: 5000,
+    }));
+  } catch (e) {
+    // 存在しない pid が混ざると終了コード 1 になるが、取れた分は出力される
+    stdout = e.stdout ?? '';
+  }
+  let pid = null;
+  for (const line of String(stdout).split('\n')) {
+    if (line.startsWith('p')) pid = Number(line.slice(1));
+    else if (line.startsWith('n') && pid != null) out.set(pid, unescapeLsof(line.slice(1)));
+  }
+  return out;
 }
 
 // 実行ファイル名が codex のプロセス(CLI や app-server)の pid 一覧
