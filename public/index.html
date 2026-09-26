@@ -854,17 +854,26 @@
     ));
 
     var q = kpis.questions || 0;
+    var requests = kpis.requests || 0;
+    var questionsSub = requests > 0 ? ("確認待ち " + requests + "件") : (q > 0 ? "対応が必要です" : "なし");
     kpiGrid.appendChild(kpiTile(
       (q > 0 ? "⚠ " : "") + "未回答の質問",
       q + "件",
-      q > 0 ? "対応が必要です" : "なし",
+      questionsSub,
       q > 0
     ));
   }
 
   /* ---------- 未回答の質問 ---------- */
   var questionsBody = document.getElementById("questions-body");
-  var QUESTION_KIND_LABEL = { ask: "選択式", text: "文中" };
+  var OPTIONS_DISPLAY_MAX = 80; // これを超える選択肢の連結文字列は省略し、title に全文を出す
+  function isQuestionLevelItem(q) {
+    return q.kind === "ask" || q.level === "question";
+  }
+  function questionKindLabel(q) {
+    if (q.kind === "ask") return "選択式";
+    return q.level === "request" ? "確認待ち" : "文中の質問";
+  }
   function renderQuestions(questions) {
     clear(questionsBody);
     questions = questions || [];
@@ -872,6 +881,14 @@
       questionsBody.appendChild(el("div", { class: "empty-state", text: "未回答の質問はありません" }));
       return;
     }
+    // question(ask・文中の質問)を先に、確認待ちを後に。それぞれ ts の降順(ts が無いものは 0 扱い)
+    var sorted = questions.slice().sort(function (a, b) {
+      var aQ = isQuestionLevelItem(a), bQ = isQuestionLevelItem(b);
+      if (aQ !== bQ) return aQ ? -1 : 1;
+      var aTs = (a.ts === null || a.ts === undefined) ? 0 : a.ts;
+      var bTs = (b.ts === null || b.ts === undefined) ? 0 : b.ts;
+      return bTs - aTs;
+    });
     var scroll = el("div", { class: "table-scroll" });
     var table = el("table");
     table.appendChild(el("thead", null, [
@@ -885,14 +902,21 @@
       ])
     ]));
     var tbody = el("tbody");
-    questions.forEach(function (q) {
+    sorted.forEach(function (q) {
+      var optionsText = (q.options && q.options.length) ? q.options.join(", ") : "—";
+      var optionsDisplay = optionsText;
+      var optionsTitle = null;
+      if (optionsText.length > OPTIONS_DISPLAY_MAX) {
+        optionsDisplay = optionsText.slice(0, OPTIONS_DISPLAY_MAX) + "…";
+        optionsTitle = optionsText;
+      }
       tbody.appendChild(el("tr", null, [
         el("td", null, [badge(q.agent)]),
         el("td", { class: "wrap", title: q.project || "", text: q.sessionTitle || q.sessionId }),
         el("td", { text: fmtRelative(q.ts) }),
-        el("td", { text: QUESTION_KIND_LABEL[q.kind] || q.kind }),
+        el("td", { text: questionKindLabel(q) }),
         el("td", { class: "wrap", text: q.text }),
-        el("td", { class: "wrap", text: (q.options && q.options.length) ? q.options.join(", ") : "—" })
+        el("td", { class: "wrap", title: optionsTitle, text: optionsDisplay })
       ]));
     });
     table.appendChild(tbody);
@@ -1584,21 +1608,33 @@
     var allQuestions = [
       {
         agent: "claude", sessionId: "sess-claude-2", sessionTitle: "PR レビューのコメント対応", project: "infra-tools",
-        ts: now - 6 * MIN, kind: "ask",
+        ts: now - 6 * MIN, kind: "ask", level: "question",
         text: "このタイムアウト値はどちらにしますか?",
         options: ["30秒に固定する", "設定可能にする"]
       },
       {
         agent: "agy", sessionId: "sess-agy-2-fail", sessionTitle: "ログ収集バッチのデバッグ", project: "log-collector",
-        ts: now - 2 * MIN, kind: "text",
+        ts: now - 2 * MIN, kind: "text", level: "question", matched: ["QEND"],
         text: "このリトライ処理は既存の再送キューと統合してよいでしょうか?",
         options: []
       },
       {
         agent: "codex", sessionId: "codex-session-1", sessionTitle: "画像アップロードAPIのバグ調査", project: "media-uploader",
-        ts: now - 45 * 1000, kind: "ask",
+        ts: now - 45 * 1000, kind: "ask", level: "question",
         text: "サムネイル生成に失敗した画像はどう扱いますか?",
         options: ["元画像のみ保存する", "アップロードを失敗にする"]
+      },
+      {
+        agent: "agy", sessionId: "sess-agy-1", sessionTitle: "API スキーマのリファクタリング検討", project: "billing-service",
+        ts: now - 3 * MIN, kind: "text", level: "question", matched: ["QEND"],
+        text: "移行方針はどちらにしますか?",
+        options: ["段階的に移行する", "一括で切り替える"]
+      },
+      {
+        agent: "codex", sessionId: "codex-session-1", sessionTitle: "画像アップロードAPIのバグ調査", project: "media-uploader",
+        ts: now - 8 * MIN, kind: "text", level: "request", matched: ["ASK"],
+        text: "動作確認が終わったら教えてください。",
+        options: []
       }
     ];
 
@@ -1680,7 +1716,8 @@
           unpricedModels: MOCK_SHOW_UNPRICED ? ["gpt-6-codex-preview"] : []
         },
         tasks: { open: 3, inProgress: 1, blocked: 1, completed: 2 },
-        questions: filteredQuestions.length,
+        questions: filteredQuestions.filter(function (q) { return q.kind === "ask" || q.level === "question"; }).length,
+        requests: filteredQuestions.filter(function (q) { return q.kind === "text" && q.level === "request"; }).length,
         sessions: {
           total: filteredSessions.length,
           running: filteredSessions.filter(function (s) { return s.status === "running"; }).length,

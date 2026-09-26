@@ -4,6 +4,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { newCursor, readAppended, readJson } from '../jsonl.js';
 import { agyProcesses, paneKeyOf } from '../proc.js';
+import { pendingTextQuestion } from '../textQuestion.js';
 
 const HOME = os.homedir();
 const ROOTS = [path.join(HOME, '.gemini', 'antigravity-cli'), path.join(HOME, '.gemini', 'antigravity')];
@@ -115,7 +116,7 @@ function derive(st) {
     lastExplicitStep: -1,
     lastAskDoneStep: -1, // 回答済み(完了した)ASK_QUESTION ステップ
     lastHumanTs: null,
-    lastAssistant: null,
+    finalResponse: null, // tool_calls の無い最後の PLANNER_RESPONSE {ts, text}。その後にツール呼び出しがあれば null
   };
   const recs = [...st.steps.values()].sort((a, b) => a.step - b.step);
   // 直前の PLANNER_RESPONSE が出したツール呼び出しのうち、実行ステップがまだ来ていないもの
@@ -148,7 +149,8 @@ function derive(st) {
         else queue.push({ ts, name });
       }
       if (r.asks?.length) d.asks.push({ step, ts, questions: r.asks });
-      if (r.text) d.lastAssistant = { ts, text: r.text };
+      if (r.calls.length) d.finalResponse = null;
+      else if (r.text) d.finalResponse = { ts, text: r.text };
     } else if (r.type === 'ASK_QUESTION') {
       // ask_question への回答は USER_INPUT ではなくこのステップの完了として記録される
       if (r.status !== 'RUNNING' && r.status !== 'PENDING' && step > d.lastAskDoneStep) d.lastAskDoneStep = step;
@@ -377,16 +379,6 @@ function tasksOf(file, mtimeMs) {
   return tasks;
 }
 
-function lastParagraph(text) {
-  const paras = text.trim().split(/\n\s*\n/);
-  return paras[paras.length - 1].trim().slice(0, 200);
-}
-
-function endsWithQuestion(text) {
-  const t = text.replace(/[\s*`]+$/u, '');
-  return t.endsWith('?') || t.endsWith('？');
-}
-
 function limitOf(q, now) {
   if (!q || typeof q.remaining_fraction !== 'number') return null;
   const resetsAt = toMs(q.reset_time);
@@ -439,11 +431,17 @@ function buildSession(id, brain, cache, sum, pid, now, children = []) {
   const questions = [];
   if (status !== 'ended') {
     for (const a of pendingAsks) {
-      for (const q of a.questions) questions.push({ ts: a.ts, kind: 'ask', text: q.text, options: q.options });
+      for (const q of a.questions) {
+        questions.push({ ts: a.ts, kind: 'ask', level: 'question', text: q.text, options: q.options, matched: [] });
+      }
     }
-    const la = st.lastAssistant;
-    if (status === 'waiting' && la && (st.lastHumanTs == null || la.ts > st.lastHumanTs) && endsWithQuestion(la.text)) {
-      questions.push({ ts: la.ts, kind: 'text', text: lastParagraph(la.text), options: [] });
+    // 本文中の質問は、実行中でないときだけ見る
+    if (status !== 'running') {
+      const q = pendingTextQuestion(st.finalResponse, st.lastHumanTs);
+      if (q) {
+        questions.push(q);
+        if (q.level === 'question') status = 'question';
+      }
     }
   }
 

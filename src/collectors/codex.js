@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { newCursor, readAppended } from '../jsonl.js';
 import { codexProcesses } from '../proc.js';
+import { pendingTextQuestion } from '../textQuestion.js';
 
 const HOME = os.homedir();
 const CODEX = path.join(HOME, '.codex');
@@ -47,7 +48,7 @@ function newState() {
     openTurn: null, // 完了していないターンの key
     humans: [], // {key, ts, text}
     lastHumanTs: null,
-    lastAssistant: null, // {ts, text}
+    finalMessage: null, // 最後に完了したターンの応答 {ts, text}。次のターンが始まったら null
     rateLimits: null, // {ts, rl}
   };
 }
@@ -151,6 +152,7 @@ function ingest(st, x) {
         const key = p.turn_id ?? `seq:${st.turnSeq++}`;
         if (!st.turns.has(key)) st.turns.set(key, { ts, human: false, completedAt: null });
         st.openTurn = key;
+        st.finalMessage = null;
         if (p.model_context_window) st.windowTokens = p.model_context_window;
         break;
       }
@@ -158,9 +160,8 @@ function ingest(st, x) {
         const t = st.turns.get(p.turn_id ?? st.openTurn);
         if (t && t.completedAt == null) t.completedAt = ts;
         st.openTurn = null;
-        if (typeof p.last_agent_message === 'string' && p.last_agent_message.trim()) {
-          st.lastAssistant = { ts, text: p.last_agent_message };
-        }
+        st.finalMessage =
+          typeof p.last_agent_message === 'string' && p.last_agent_message.trim() ? { ts, text: p.last_agent_message } : null;
         break;
       }
       case 'turn_aborted':
@@ -231,9 +232,6 @@ function ingest(st, x) {
       st.answered.add(p.call_id);
       const t = st.tools.get(p.call_id);
       if (t) Object.assign(t, classifyOutput(p.output));
-    } else if (p.type === 'message' && p.role === 'assistant') {
-      const text = textOf(p.content);
-      if (text.trim()) st.lastAssistant = { ts, text };
     }
   }
 }
@@ -358,16 +356,6 @@ function oneLine(s, max) {
   return s.trim().split('\n')[0].trim().slice(0, max);
 }
 
-function lastParagraph(text) {
-  const paras = text.trim().split(/\n\s*\n/);
-  return paras[paras.length - 1].trim().slice(0, 200);
-}
-
-function endsWithQuestion(text) {
-  const t = text.replace(/[\s*`]+$/u, '');
-  return t.endsWith('?') || t.endsWith('？');
-}
-
 function limitOf(r, now) {
   if (!r || typeof r.used_percent !== 'number') return null;
   const resetsAt = typeof r.resets_at === 'number' ? r.resets_at * 1000 : null;
@@ -427,12 +415,18 @@ function buildSession(node, kids, alive, now) {
   if (status !== 'ended') {
     if (status === 'question') {
       for (const a of pendingAsks) {
-        for (const q of a.questions) questions.push({ ts: a.ts, kind: 'ask', text: q.text, options: q.options });
+        for (const q of a.questions) {
+          questions.push({ ts: a.ts, kind: 'ask', level: 'question', text: q.text, options: q.options, matched: [] });
+        }
       }
     }
-    const la = st.lastAssistant;
-    if (status === 'waiting' && la && (st.lastHumanTs == null || la.ts > st.lastHumanTs) && endsWithQuestion(la.text)) {
-      questions.push({ ts: la.ts, kind: 'text', text: lastParagraph(la.text), options: [] });
+    // 本文中の質問は、ターンが完了していて次のターンが始まっていないときだけ見る
+    if (!st.openTurn) {
+      const q = pendingTextQuestion(st.finalMessage, st.lastHumanTs);
+      if (q) {
+        questions.push(q);
+        if (q.level === 'question') status = 'question';
+      }
     }
   }
 
