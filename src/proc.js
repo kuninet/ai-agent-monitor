@@ -79,6 +79,21 @@ export async function agyProcesses() {
   }
 }
 
+// 実行ファイル名が codex のプロセス(CLI や app-server)の pid 一覧
+export async function codexProcesses() {
+  try {
+    const { stdout } = await ps(['-axo', 'pid=,command=']);
+    const out = [];
+    for (const line of stdout.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\S*\/)?codex(\s.*)?$/);
+      if (m) out.push(Number(m[1]));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 // Orca の端末一覧。Orca が無い環境では空配列。
 export async function orcaTerminals() {
   try {
