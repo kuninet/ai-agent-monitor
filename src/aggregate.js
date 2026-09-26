@@ -1,14 +1,13 @@
-import * as claude from './collectors/claude.js';
-import * as agy from './collectors/agy.js';
+import { AGENT_DEFS, AGENT_IDS, agentDef } from './agents.js';
+import { enabledAgents } from './config.js';
 import { orcaTerminals } from './proc.js';
 
 export const RANGES = ['today', '24h', '7d', '30d', 'all'];
-export const AGENTS = ['all', 'claude', 'agy'];
+export const AGENTS = ['all', ...AGENT_IDS];
 
 const STATUS_ORDER = { running: 0, question: 1, waiting: 2, ended: 3 };
 const TASK_ORDER = { in_progress: 0, pending: 1, completed: 2 };
 const SUBAGENT_ORDER = { running: 0, idle: 1, done: 2, ended: 3 };
-const IDENTITY = { claude: 'claude', agy: 'antigravity' };
 const TERMINAL_TTL_MS = 10_000;
 
 let terminalCache = { at: 0, list: [] };
@@ -47,7 +46,8 @@ function resolveHandle(s, list) {
     if (t) return t.handle;
   }
   if (!key && s.live && s.cwd) {
-    const hits = list.filter((t) => t.worktreePath === s.cwd && t.agentIdentity === IDENTITY[s.agent]);
+    const identity = agentDef(s.agent)?.identity;
+    const hits = list.filter((t) => t.worktreePath === s.cwd && t.agentIdentity === identity);
     if (hits.length === 1) return hits[0].handle;
   }
   return null;
@@ -81,7 +81,7 @@ function subagentRows(s, inRange, since) {
       startedAt: a.startedAt,
       updatedAt: a.updatedAt,
       lastTool: a.lastTool,
-      costUSD: s.agent === 'claude' ? (cost ?? 0) : null,
+      costUSD: agentDef(s.agent)?.priced ? (cost ?? 0) : null,
       toolCalls: calls,
       toolErrors: errors,
     };
@@ -96,31 +96,35 @@ function rate(num, den) {
   return den > 0 ? num / den : null;
 }
 
-async function collectAll(since) {
+// 有効なエージェントのコレクタだけを並列に呼ぶ。1 つが失敗しても他は出す
+async function collectAll(since, enabled) {
   const errors = [];
-  const [c, a] = await Promise.allSettled([claude.collect({ since }), agy.collect({ since })]);
-  const pick = (r, name) => {
+  const defs = AGENT_DEFS.filter((d) => enabled.includes(d.id));
+  const results = await Promise.allSettled(defs.map((d) => d.collect({ since })));
+  const quota = Object.fromEntries(AGENT_IDS.map((id) => [id, null]));
+  const all = [];
+  defs.forEach((d, i) => {
+    const r = results[i];
     if (r.status === 'rejected') {
-      errors.push(`${name}: ${r.reason?.message ?? r.reason}`);
-      return { sessions: [], quota: null };
+      errors.push(`${d.id}: ${r.reason?.message ?? r.reason}`);
+      return;
     }
     for (const e of r.value.errors ?? []) errors.push(e);
-    return r.value;
-  };
-  const cr = pick(c, 'claude');
-  const ar = pick(a, 'agy');
-  const all = [...cr.sessions, ...ar.sessions];
+    quota[d.id] = r.value.quota ?? null;
+    all.push(...r.value.sessions);
+  });
   lastSessions = new Map(all.map((s) => [`${s.agent}:${s.id}`, s]));
-  return { all, quota: { claude: cr.quota ?? null, agy: ar.quota ?? null }, errors };
+  return { all, quota, errors };
 }
 
 export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
+  const enabled = enabledAgents();
   if (!RANGES.includes(range)) range = 'today';
-  if (!AGENTS.includes(agent)) agent = 'all';
+  if (agent !== 'all' && !enabled.includes(agent)) agent = 'all';
   const now = Date.now();
   const since = sinceOf(range, now);
 
-  const { all, quota, errors } = await collectAll(since);
+  const { all, quota, errors } = await collectAll(since, enabled);
   const list = await terminals();
 
   const picked = all.filter(
@@ -128,14 +132,12 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
   );
   const inRange = (e) => (e.ts ?? 0) >= since;
 
-  // agy の usage は直近 1 回分のスナップショットで Claude の累計とは性質が違うので、
-  // tokens / cacheReadRate は Claude だけで集計する(agent=agy のときは agy の値)
-  const tokenAgent = agent === 'agy' ? 'agy' : 'claude';
+  // agy の usage は直近 1 回分のスナップショットで、リクエストごとの値とは性質が違う。
+  // tokens / cacheReadRate は agent=all のとき累計に使えるエージェント(Claude・Codex)だけで集計し、
+  // エージェント指定時はそのエージェントの値にする
+  const countsTokens = (id) => (agent === 'all' ? !!agentDef(id)?.cumulativeUsage : id === agent);
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  const byAgent = {
-    claude: { cost: 0, cr: 0, den: 0 },
-    agy: { cost: 0, cr: 0, den: 0 },
-  };
+  const byAgent = Object.fromEntries(AGENT_IDS.map((id) => [id, { cost: 0, cr: 0, den: 0 }]));
   const unpriced = new Set();
   const errTools = new Map();
   let toolCalls = 0;
@@ -156,7 +158,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
     let sIn = 0;
     let sCr = 0;
     for (const u of s.events.usage.filter(inRange)) {
-      if (s.agent === tokenAgent) {
+      if (countsTokens(s.agent)) {
         tokens.input += u.input;
         tokens.output += u.output;
         tokens.cacheRead += u.cacheRead;
@@ -165,7 +167,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       sIn += u.input + u.cacheRead + u.cacheWrite;
       sCr += u.cacheRead;
       if (u.costUSD != null) cost = (cost ?? 0) + u.costUSD;
-      else if (s.agent === 'claude' && u.model) unpriced.add(u.model);
+      else if (agentDef(s.agent)?.priced && u.model) unpriced.add(u.model);
     }
     const ag = byAgent[s.agent];
     ag.cr += sCr;
@@ -253,7 +255,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       live: s.live,
       updatedAt: s.updatedAt,
       startedAt: s.startedAt,
-      costUSD: s.agent === 'claude' ? cost : null,
+      costUSD: agentDef(s.agent)?.priced ? cost : null,
       cacheReadRate: rate(sCr, sIn),
       toolCalls: sCalls,
       toolErrors: sErrors,
@@ -279,7 +281,15 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
   for (const t of tasks) delete t._updatedAt;
   questions.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
 
-  const claudeCost = agent === 'agy' ? null : byAgent.claude.cost;
+  // 費用は単価の分かるエージェント(Claude)だけ。無効なエージェントや絞り込みの対象外は null
+  const costByAgent = Object.fromEntries(
+    AGENT_DEFS.map((d) => [
+      d.id,
+      d.priced && enabled.includes(d.id) && (agent === 'all' || agent === d.id) ? byAgent[d.id].cost : null,
+    ]),
+  );
+  const costs = Object.values(costByAgent).filter((c) => c != null);
+  const totalCost = costs.length ? costs.reduce((a, b) => a + b, 0) : null;
   const topErrorTools = [...errTools.values()]
     .filter((e) => e.errors > 0)
     .sort((a, b) => b.errors - a.errors || b.calls - a.calls)
@@ -289,17 +299,15 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
     generatedAt: now,
     range,
     agent,
+    enabledAgents: enabled,
     quota,
     kpis: {
-      costUSD: claudeCost,
-      costByAgent: { claude: claudeCost, agy: null },
+      costUSD: totalCost,
+      costByAgent,
       unpricedModels: [...unpriced].sort(),
       tokens,
       cacheReadRate: rate(tokens.cacheRead, tokens.input + tokens.cacheRead + tokens.cacheWrite),
-      cacheReadRateByAgent: {
-        claude: rate(byAgent.claude.cr, byAgent.claude.den),
-        agy: rate(byAgent.agy.cr, byAgent.agy.den),
-      },
+      cacheReadRateByAgent: Object.fromEntries(AGENT_IDS.map((id) => [id, rate(byAgent[id].cr, byAgent[id].den)])),
       toolCalls,
       toolErrors,
       toolDenied,
@@ -323,7 +331,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
 export async function jumpHandle(agent, id) {
   let s = lastSessions.get(`${agent}:${id}`);
   if (!s) {
-    await collectAll(0);
+    await collectAll(0, enabledAgents());
     s = lastSessions.get(`${agent}:${id}`);
   }
   if (!s) return null;

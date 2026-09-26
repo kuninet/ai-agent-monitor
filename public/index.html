@@ -16,6 +16,7 @@
     --subagent-bg: #f0eff4;
     --accent-claude: #d97757;
     --accent-agy: #4285f4;
+    --accent-codex: #7c5cff;
     --status-good: #1a8a4a;
     --status-warning: #b8790a;
     --status-critical: #cc3333;
@@ -34,6 +35,7 @@
       --subagent-bg: #211f26;
       --accent-claude: #e3906c;
       --accent-agy: #6ba0f7;
+      --accent-codex: #a78bfa;
       --status-good: #3fbf74;
       --status-warning: #e0a530;
       --status-critical: #ec5b5b;
@@ -120,6 +122,60 @@
     font-weight: 700;
   }
 
+  .settings-btn {
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .settings-btn:hover { border-color: var(--muted); }
+  .settings-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .settings-panel {
+    position: absolute;
+    top: 100%;
+    right: 16px;
+    margin-top: 6px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    padding: 12px 14px;
+    min-width: 220px;
+    max-width: calc(100vw - 32px);
+    z-index: 20;
+  }
+  .settings-panel-title {
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--fg);
+  }
+  .settings-agent-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .settings-agent-row input[disabled] { cursor: not-allowed; }
+  .settings-agent-row.is-saving { opacity: 0.55; }
+  .settings-agent-row.is-saving input { cursor: progress; }
+  .settings-locked-note {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
   main {
     padding: 16px;
     max-width: 1400px;
@@ -161,6 +217,7 @@
   }
   .quota-dot.claude { background: var(--accent-claude); }
   .quota-dot.agy { background: var(--accent-agy); }
+  .quota-dot.codex { background: var(--accent-codex); }
   .quota-plan {
     font-size: 12px;
     color: var(--muted);
@@ -257,12 +314,13 @@
   }
   .badge.badge-claude { background: var(--accent-claude); }
   .badge.badge-agy { background: var(--accent-agy); }
+  .badge.badge-codex { background: var(--accent-codex); }
 
   .ctx-cell { display: flex; align-items: center; gap: 6px; min-width: 90px; }
   .ctx-cell .bar-track { width: 56px; flex: 0 0 auto; }
   .ctx-cell .ctx-pct { color: var(--fg); font-size: 11px; }
 
-  /* サブエージェント(改訂2) */
+  /* サブエージェント */
   .sa-cell { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .sa-toggle {
     border: none;
@@ -372,6 +430,12 @@
         <span id="conn-error" class="conn-error" hidden>接続エラー</span>
         <span id="last-updated">最終更新: --:--:--</span>
       </div>
+      <button type="button" id="settings-btn" class="settings-btn" aria-label="設定" aria-haspopup="dialog" aria-expanded="false">⚙</button>
+      <div id="settings-panel" class="settings-panel" hidden role="dialog" aria-label="設定">
+        <div class="settings-panel-title">監視するエージェント</div>
+        <div id="settings-agent-list"></div>
+        <div id="settings-locked-note" class="settings-locked-note" hidden>起動オプション --agents で指定されています</div>
+      </div>
     </div>
   </header>
 
@@ -445,11 +509,38 @@
     { value: "30d", label: "30日" },
     { value: "all", label: "全期間" }
   ];
-  var AGENT_OPTIONS = [
-    { value: "all", label: "全部" },
-    { value: "claude", label: "Claude" },
-    { value: "agy", label: "agy" }
-  ];
+  // エージェントの表示順・ラベルは /api/config の available(id, label)を正とする。
+  // configState.available が無い(未取得・取得失敗)場合だけ、この既定値にフォールバックする
+  var AGENT_ORDER_FALLBACK = ["claude", "agy", "codex"];
+  var AGENT_LABEL_FALLBACK = { claude: "Claude", agy: "agy", codex: "Codex" };
+  // まだ enabledAgents を返さない旧バックエンド向けの既定値
+  var DEFAULT_ENABLED_AGENTS = ["claude", "agy"];
+  function resolveEnabledAgents(data) {
+    if (data && Array.isArray(data.enabledAgents)) return data.enabledAgents;
+    return DEFAULT_ENABLED_AGENTS;
+  }
+  // configState(/api/config の応答)から表示順を得る。id の並びが available の並び
+  function getAgentOrder() {
+    if (configState && configState.available && configState.available.length) {
+      return configState.available.map(function (a) { return a.id; });
+    }
+    return AGENT_ORDER_FALLBACK;
+  }
+  function getAgentLabel(id) {
+    if (configState && configState.available) {
+      var found = null;
+      configState.available.forEach(function (a) { if (a.id === id) found = a; });
+      if (found) return found.label;
+    }
+    return AGENT_LABEL_FALLBACK[id] || id;
+  }
+  function buildAgentOptionsList(enabledAgents) {
+    var opts = [{ value: "all", label: "全部" }];
+    getAgentOrder().filter(function (a) { return enabledAgents.indexOf(a) !== -1; }).forEach(function (a) {
+      opts.push({ value: a, label: getAgentLabel(a) });
+    });
+    return opts;
+  }
 
   var state = {
     range: getStored("range", "today"),
@@ -458,7 +549,6 @@
     showEndedSessions: getStored("showEndedSessions", false)
   };
   if (!RANGE_OPTIONS.some(function (o) { return o.value === state.range; })) state.range = "today";
-  if (!AGENT_OPTIONS.some(function (o) { return o.value === state.agent; })) state.agent = "all";
 
   var lastData = null;
   var pollTimer = null;
@@ -561,17 +651,18 @@
       container.appendChild(btn);
     });
   }
-  function renderToggles() {
+  function renderToggles(enabledAgents) {
+    enabledAgents = enabledAgents || DEFAULT_ENABLED_AGENTS;
     buildToggleGroup(rangeGroup, RANGE_OPTIONS, state.range, function (value) {
       state.range = value;
       setStored("range", value);
-      renderToggles();
+      renderToggles(lastData ? resolveEnabledAgents(lastData) : enabledAgents);
       loadAndRender();
     });
-    buildToggleGroup(agentGroup, AGENT_OPTIONS, state.agent, function (value) {
+    buildToggleGroup(agentGroup, buildAgentOptionsList(enabledAgents), state.agent, function (value) {
       state.agent = value;
       setStored("agent", value);
-      renderToggles();
+      renderToggles(enabledAgents);
       loadAndRender();
     });
   }
@@ -617,35 +708,43 @@
     row.appendChild(el("span", { class: "quota-reset", text: resetText }));
     return row;
   }
-  function renderQuota(quota) {
+  // エージェントごとの使用枠カードの組み立て方(ラベル・行構成)
+  var QUOTA_REGISTRY = {
+    claude: function (q) {
+      return { plan: null, rows: [["5h枠", q && q.fiveHour], ["週次枠", q && q.weekly]] };
+    },
+    agy: function (q) {
+      return {
+        plan: q && q.plan,
+        rows: [
+          ["Gemini 5h", q && q.gemini5h],
+          ["Gemini週次", q && q.geminiWeekly],
+          ["3P 5h", q && q.thirdParty5h],
+          ["3P週次", q && q.thirdPartyWeekly]
+        ]
+      };
+    },
+    codex: function (q) {
+      return { plan: q && q.plan, rows: [["5h枠", q && q.fiveHour], ["週次枠", q && q.weekly]] };
+    }
+  };
+  function renderQuota(quota, enabledAgents) {
     clear(quotaGrid);
     quota = quota || {};
-
-    var claudeCard = el("div", { class: "card" }, [
-      el("div", { class: "quota-card-title" }, [
-        el("span", { class: "quota-dot claude" }),
-        el("span", { text: "Claude" })
-      ])
-    ]);
-    var c = quota.claude;
-    claudeCard.appendChild(quotaRow("5h枠", c ? c.fiveHour : null));
-    claudeCard.appendChild(quotaRow("週次枠", c ? c.weekly : null));
-    quotaGrid.appendChild(claudeCard);
-
-    var agy = quota.agy;
-    var agyTitle = el("div", { class: "quota-card-title" }, [
-      el("span", { class: "quota-dot agy" }),
-      el("span", { text: "agy" })
-    ]);
-    if (agy && agy.plan) {
-      agyTitle.appendChild(el("span", { class: "quota-plan", text: agy.plan }));
-    }
-    var agyCard = el("div", { class: "card" }, [agyTitle]);
-    agyCard.appendChild(quotaRow("Gemini 5h", agy ? agy.gemini5h : null));
-    agyCard.appendChild(quotaRow("Gemini週次", agy ? agy.geminiWeekly : null));
-    agyCard.appendChild(quotaRow("3P 5h", agy ? agy.thirdParty5h : null));
-    agyCard.appendChild(quotaRow("3P週次", agy ? agy.thirdPartyWeekly : null));
-    quotaGrid.appendChild(agyCard);
+    enabledAgents = enabledAgents || DEFAULT_ENABLED_AGENTS;
+    getAgentOrder()
+      .filter(function (a) { return enabledAgents.indexOf(a) !== -1 && QUOTA_REGISTRY[a]; })
+      .forEach(function (agentId) {
+      var conf = QUOTA_REGISTRY[agentId](quota[agentId]);
+      var titleRow = el("div", { class: "quota-card-title" }, [
+        el("span", { class: "quota-dot " + agentId }),
+        el("span", { text: getAgentLabel(agentId) })
+      ]);
+      if (conf.plan) titleRow.appendChild(el("span", { class: "quota-plan", text: conf.plan }));
+      var card = el("div", { class: "card" }, [titleRow]);
+      conf.rows.forEach(function (pair) { card.appendChild(quotaRow(pair[0], pair[1])); });
+      quotaGrid.appendChild(card);
+    });
   }
 
   /* ---------- KPI ---------- */
@@ -658,9 +757,10 @@
     if (sub) tile.appendChild(el("div", { class: "kpi-sub", text: sub }));
     return tile;
   }
-  function renderKpis(kpis) {
+  function renderKpis(kpis, enabledAgents) {
     clear(kpiGrid);
     kpis = kpis || {};
+    enabledAgents = enabledAgents || DEFAULT_ENABLED_AGENTS;
 
     var costSub = "API換算";
     if (kpis.unpricedModels && kpis.unpricedModels.length) {
@@ -669,11 +769,11 @@
     kpiGrid.appendChild(kpiTile("費用(API換算)", fmtUSD(kpis.costUSD), costSub));
 
     var cabAgent = kpis.cacheReadRateByAgent || {};
-    kpiGrid.appendChild(kpiTile(
-      "キャッシュ読込率",
-      fmtFraction(kpis.cacheReadRate),
-      "Claude " + fmtFraction(cabAgent.claude) + " / agy " + fmtFraction(cabAgent.agy)
-    ));
+    var cacheSub = getAgentOrder()
+      .filter(function (a) { return enabledAgents.indexOf(a) !== -1; })
+      .map(function (a) { return getAgentLabel(a) + " " + fmtFraction(cabAgent[a]); })
+      .join(" / ");
+    kpiGrid.appendChild(kpiTile("キャッシュ読込率", fmtFraction(kpis.cacheReadRate), cacheSub));
 
     var errSub = (kpis.toolErrors === null || kpis.toolErrors === undefined ? "—" : kpis.toolErrors) +
       " / " + (kpis.toolCalls === null || kpis.toolCalls === undefined ? "—" : kpis.toolCalls) + "件";
@@ -767,11 +867,11 @@
   function badge(agent) {
     return el("span", {
       class: "badge badge-" + agent,
-      text: agent === "claude" ? "Claude" : "agy"
+      text: getAgentLabel(agent)
     });
   }
 
-  /* ---------- サブエージェント(改訂2) ---------- */
+  /* ---------- サブエージェント ---------- */
   // 開閉状態はメモリのみで保持(ポーリングをまたいで維持、リロードでは既定に戻る)
   var subagentOpenState = {};
   function sessionKey(s) { return s.agent + ":" + s.id; }
@@ -1026,10 +1126,210 @@
     });
   }
 
+  /* ---------- 設定パネル(監視するエージェント) ---------- */
+  var settingsBtn = document.getElementById("settings-btn");
+  var settingsPanel = document.getElementById("settings-panel");
+  var settingsListEl = document.getElementById("settings-agent-list");
+  var settingsLockedNoteEl = document.getElementById("settings-locked-note");
+  var configState = null; // { agents: string[], available: [{id,label,detected}], locked: bool }
+  var configSaving = false; // POST 応答待ちの間はチェックボックスを無効化する
+  var configRequestSeq = 0; // 古い応答が新しい状態を巻き戻さないようにする通し番号
+
+  function fetchConfig() {
+    if (IS_MOCK) return mockGetConfig();
+    return fetch("/api/config").then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+  function postConfig(agents) {
+    if (IS_MOCK) return mockPostConfig(agents);
+    return fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents: agents })
+    }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+  // パネルを開くたびに呼ぶ(別タブで変更された設定を反映するため)
+  function refreshConfig(focusAfter) {
+    return fetchConfig().then(function (data) {
+      configState = data;
+      renderSettingsPanel();
+      if (focusAfter) focusFirstSettingsControl();
+    }).catch(function () {
+      configState = null;
+      renderSettingsPanel();
+      if (focusAfter) focusFirstSettingsControl();
+    });
+  }
+  function focusFirstSettingsControl() {
+    var focusable = settingsPanel.querySelector("input:not([disabled]), button");
+    if (focusable) focusable.focus();
+  }
+
+  function renderSettingsPanel() {
+    // 再描画でチェックボックスが作り直されてもフォーカスを保てるよう、対象の agent id を覚えておく
+    var focusedAgentId = null;
+    var activeEl = document.activeElement;
+    if (activeEl && settingsListEl.contains(activeEl) && activeEl.dataset && activeEl.dataset.agentId) {
+      focusedAgentId = activeEl.dataset.agentId;
+    }
+
+    clear(settingsListEl);
+    if (!configState) {
+      settingsListEl.appendChild(el("div", { class: "empty-state", text: "設定の取得に失敗しました" }));
+      settingsLockedNoteEl.hidden = true;
+      return;
+    }
+    settingsLockedNoteEl.hidden = !configState.locked;
+    (configState.available || []).forEach(function (item) {
+      var checked = configState.agents.indexOf(item.id) !== -1;
+      var isOnlyChecked = checked && configState.agents.length <= 1;
+      // 「最後の1つ」と「起動オプションで固定」は実際に disabled にする。
+      // 「保存中」はフォーカスを保つため disabled にせず、aria-disabled + onchange 側のガードで止める
+      var hardDisabled = configState.locked || isOnlyChecked;
+      var savingOnly = configSaving && !hardDisabled;
+      var titleText = configState.locked
+        ? "起動オプションで指定されています"
+        : (isOnlyChecked ? "最後の1つは外せません" : null);
+      var checkbox = el("input", {
+        type: "checkbox",
+        disabled: hardDisabled ? "disabled" : null,
+        "aria-disabled": savingOnly ? "true" : null,
+        "aria-label": item.label,
+        "data-agent-id": item.id,
+        onchange: function (e) { onToggleAgent(item.id, e.target.checked, e.target); }
+      });
+      checkbox.checked = checked;
+      var labelText = item.label + (item.detected ? "" : "(データなし)");
+      var row = el("label", {
+        class: "settings-agent-row" + (savingOnly ? " is-saving" : ""),
+        title: titleText
+      }, [
+        checkbox,
+        el("span", { text: labelText })
+      ]);
+      settingsListEl.appendChild(row);
+    });
+
+    if (focusedAgentId) {
+      var checkboxes = settingsListEl.querySelectorAll('input[type="checkbox"]');
+      for (var i = 0; i < checkboxes.length; i++) {
+        if (checkboxes[i].dataset.agentId === focusedAgentId) {
+          checkboxes[i].focus();
+          break;
+        }
+      }
+    }
+  }
+
+  function onToggleAgent(agentId, checked, checkboxEl) {
+    if (!configState || configState.locked) return;
+    if (configSaving) {
+      // 保存中に来た変更は無視し、見た目だけ元に戻す(aria-disabled なので実際に止めるのはここの役目)
+      if (checkboxEl) checkboxEl.checked = !checked;
+      return;
+    }
+    var next = configState.agents.slice();
+    if (checked) {
+      if (next.indexOf(agentId) === -1) next.push(agentId);
+    } else {
+      if (next.length <= 1) {
+        if (checkboxEl) checkboxEl.checked = true; // 最後の1つは外せない(チェックボックスの disabled で通常はここに来ない)
+        return;
+      }
+      next = next.filter(function (a) { return a !== agentId; });
+    }
+    var prevAgents = configState.agents;
+    configState.agents = next; // 楽観的に即時反映
+    configSaving = true;
+    renderSettingsPanel();
+    var seq = ++configRequestSeq;
+    postConfig(next).then(function (data) {
+      if (seq !== configRequestSeq) return; // 後から送った要求の応答が先に来た場合はこちらを捨てる
+      configState = data;
+      configSaving = false;
+      renderSettingsPanel();
+      loadAndRender();
+    }).catch(function () {
+      if (seq !== configRequestSeq) return;
+      configState.agents = prevAgents;
+      configSaving = false;
+      renderSettingsPanel();
+      showToast("設定の保存に失敗しました", "error");
+    });
+  }
+
+  function isSettingsPanelOpen() { return !settingsPanel.hidden; }
+  function openSettingsPanel() {
+    settingsPanel.hidden = false;
+    settingsBtn.setAttribute("aria-expanded", "true");
+    document.addEventListener("keydown", onSettingsKeydown, true);
+    document.addEventListener("mousedown", onSettingsOutsideClick, true);
+    refreshConfig(true);
+  }
+  function closeSettingsPanel() {
+    if (!isSettingsPanelOpen()) return;
+    settingsPanel.hidden = true;
+    settingsBtn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("keydown", onSettingsKeydown, true);
+    document.removeEventListener("mousedown", onSettingsOutsideClick, true);
+    settingsBtn.focus();
+  }
+  function onSettingsKeydown(e) {
+    if (e.key === "Escape" || e.key === "Esc") {
+      e.stopPropagation();
+      closeSettingsPanel();
+    }
+  }
+  function onSettingsOutsideClick(e) {
+    if (settingsPanel.contains(e.target) || settingsBtn.contains(e.target)) return;
+    closeSettingsPanel();
+  }
+  settingsBtn.addEventListener("click", function () {
+    if (isSettingsPanelOpen()) closeSettingsPanel(); else openSettingsPanel();
+  });
+
   /* ---------- モックデータ(?mock=1 のときのみ有効) ---------- */
+  // 「監視するエージェント」設定のモック状態(/api/config の代わり)
+  var mockConfigState = {
+    agents: ["claude", "agy", "codex"],
+    available: [
+      { id: "claude", label: "Claude", detected: true },
+      { id: "agy", label: "agy", detected: true },
+      { id: "codex", label: "Codex", detected: true }
+    ],
+    locked: false
+  };
+  function cloneConfigState() { return JSON.parse(JSON.stringify(mockConfigState)); }
+  // 実際の通信に近づけるため、わずかに遅延させてから解決する(保存中の無効化表示も確認できるように)
+  function mockDelay(fn) {
+    return new Promise(function (resolve, reject) {
+      setTimeout(function () {
+        try { resolve(fn()); } catch (e) { reject(e); }
+      }, 150);
+    });
+  }
+  function mockGetConfig() { return mockDelay(function () { return cloneConfigState(); }); }
+  function mockPostConfig(agents) {
+    return mockDelay(function () {
+      if (mockConfigState.locked) throw new Error("locked");
+      var validIds = mockConfigState.available.map(function (a) { return a.id; });
+      mockConfigState.agents = agents.filter(function (a) { return validIds.indexOf(a) !== -1; });
+      return cloneConfigState();
+    });
+  }
+
   function buildMockSnapshot(range, agentFilter) {
     var now = Date.now();
     var MIN = 60 * 1000, HOUR = 3600 * 1000, DAY = 86400 * 1000;
+    var enabledAgents = mockConfigState.agents.slice();
+    if (agentFilter !== "all" && enabledAgents.indexOf(agentFilter) === -1) {
+      agentFilter = "all";
+    }
 
     var allSessions = [
       {
@@ -1042,7 +1342,7 @@
         subagentSummary: { total: 2, running: 1 },
         subagents: [
           {
-            id: "sub-fork-1", name: "sess-claude-1-fork", type: "general-purpose", model: "claude-sonnet-5",
+            id: "sub-fork-1", name: "test-runner", type: "general-purpose", model: "claude-sonnet-5",
             description: "別ブランチでテストケースを並行調査するフォーク",
             isFork: true, isTeammate: false, status: "running",
             startedAt: now - 5 * MIN, updatedAt: now - 10 * 1000,
@@ -1112,6 +1412,25 @@
         context: { usedTokens: 5000, windowTokens: 200000, pct: 2.5 },
         openTasks: 0, questions: 0, canJump: false,
         subagentSummary: { total: 0, running: 0 }, subagents: []
+      },
+      {
+        agent: "codex", id: "codex-session-1", title: "画像アップロードAPIのバグ調査",
+        project: "media-uploader", cwd: "/Users/dev/git/media-uploader", branch: "main", model: "gpt-5-codex",
+        status: "running", live: true, updatedAt: now - 45 * 1000, startedAt: now - 90 * MIN,
+        costUSD: null, cacheReadRate: 0.68, toolCalls: 27, toolErrors: 1, compactions: 0, autoContinues: 1,
+        context: { usedTokens: 62000, windowTokens: 272000, pct: 22.8 },
+        openTasks: 1, questions: 1, canJump: true,
+        subagentSummary: { total: 1, running: 1 },
+        subagents: [
+          {
+            id: "codex-sub-1", name: "reviewer-thread", type: "review", model: "gpt-5-codex",
+            description: "変更差分をレビューする補助スレッド",
+            isFork: false, isTeammate: false, status: "running",
+            startedAt: now - 20 * MIN, updatedAt: now - 30 * 1000,
+            lastTool: { name: "apply_patch", ts: now - 30 * 1000 },
+            costUSD: null, toolCalls: 9, toolErrors: 0
+          }
+        ]
       }
     ];
 
@@ -1127,6 +1446,12 @@
         ts: now - 2 * MIN, kind: "text",
         text: "このリトライ処理は既存の再送キューと統合してよいでしょうか?",
         options: []
+      },
+      {
+        agent: "codex", sessionId: "codex-session-1", sessionTitle: "画像アップロードAPIのバグ調査", project: "media-uploader",
+        ts: now - 45 * 1000, kind: "ask",
+        text: "サムネイル生成に失敗した画像はどう扱いますか?",
+        options: ["元画像のみ保存する", "アップロードを失敗にする"]
       }
     ];
 
@@ -1136,35 +1461,53 @@
       { agent: "claude", sessionId: "sess-claude-1", sessionTitle: "ダッシュボードの実装を進める", sessionStatus: "running", project: "ai_status", id: "3", title: "モックデータの整備", status: "completed", blockedBy: [], activeForm: null },
       { agent: "agy", sessionId: "sess-agy-1", sessionTitle: "API スキーマのリファクタリング検討", sessionStatus: "waiting", project: "billing-service", id: "1", title: "既存エンドポイントの調査", status: "completed", blockedBy: [], activeForm: null },
       { agent: "agy", sessionId: "sess-agy-1", sessionTitle: "API スキーマのリファクタリング検討", sessionStatus: "waiting", project: "billing-service", id: "1.2", title: "移行計画のドラフト作成", status: "pending", blockedBy: [], activeForm: null },
-      { agent: "claude", sessionId: "sess-claude-3", sessionTitle: "旧セッション(終了済み)", sessionStatus: "ended", project: "ai_status", id: "1", title: "残っていた未完了タスク", status: "pending", blockedBy: [], activeForm: null }
+      { agent: "claude", sessionId: "sess-claude-3", sessionTitle: "旧セッション(終了済み)", sessionStatus: "ended", project: "ai_status", id: "1", title: "残っていた未完了タスク", status: "pending", blockedBy: [], activeForm: null },
+      { agent: "codex", sessionId: "codex-session-1", sessionTitle: "画像アップロードAPIのバグ調査", sessionStatus: "running", project: "media-uploader", id: "1", title: "失敗ログの再現手順を確認", status: "completed", blockedBy: [], activeForm: null },
+      { agent: "codex", sessionId: "codex-session-1", sessionTitle: "画像アップロードAPIのバグ調査", sessionStatus: "running", project: "media-uploader", id: "2", title: "サムネイル生成処理の修正", status: "in_progress", blockedBy: [], activeForm: null }
     ];
 
-    var filteredSessions = agentFilter === "all" ? allSessions : allSessions.filter(function (s) { return s.agent === agentFilter; });
-    var filteredQuestions = agentFilter === "all" ? allQuestions : allQuestions.filter(function (q) { return q.agent === agentFilter; });
-    var filteredTasks = agentFilter === "all" ? allTasks : allTasks.filter(function (t) { return t.agent === agentFilter; });
+    var visibleSessions = allSessions.filter(function (s) { return enabledAgents.indexOf(s.agent) !== -1; });
+    var visibleQuestions = allQuestions.filter(function (q) { return enabledAgents.indexOf(q.agent) !== -1; });
+    var visibleTasks = allTasks.filter(function (t) { return enabledAgents.indexOf(t.agent) !== -1; });
+    var filteredSessions = agentFilter === "all" ? visibleSessions : visibleSessions.filter(function (s) { return s.agent === agentFilter; });
+    var filteredQuestions = agentFilter === "all" ? visibleQuestions : visibleQuestions.filter(function (q) { return q.agent === agentFilter; });
+    var filteredTasks = agentFilter === "all" ? visibleTasks : visibleTasks.filter(function (t) { return t.agent === agentFilter; });
+
+    var quotaFull = {
+      claude: { fiveHour: { pct: 42.5, resetsAt: now + 2 * HOUR, stale: false }, weekly: null, updatedAt: now - 30 * 1000 },
+      agy: {
+        plan: "Google AI Ultra",
+        gemini5h: { pct: 15.0, resetsAt: now + 3 * HOUR, stale: false },
+        geminiWeekly: { pct: 71.0, resetsAt: now + 4 * DAY, stale: true },
+        thirdParty5h: null,
+        thirdPartyWeekly: null,
+        updatedAt: now - 90 * 1000
+      },
+      codex: {
+        plan: "Plus",
+        fiveHour: { pct: 34.0, resetsAt: now + 90 * MIN, stale: false },
+        weekly: { pct: 58.0, resetsAt: now + 5 * DAY, stale: false },
+        updatedAt: now - 45 * 1000
+      }
+    };
+    var quota = {};
+    AGENT_ORDER_FALLBACK.forEach(function (a) {
+      quota[a] = enabledAgents.indexOf(a) !== -1 ? quotaFull[a] : null;
+    });
 
     return {
       generatedAt: now,
       range: range,
       agent: agentFilter,
-      quota: {
-        claude: { fiveHour: { pct: 42.5, resetsAt: now + 2 * HOUR, stale: false }, weekly: null, updatedAt: now - 30 * 1000 },
-        agy: {
-          plan: "Google AI Ultra",
-          gemini5h: { pct: 15.0, resetsAt: now + 3 * HOUR, stale: false },
-          geminiWeekly: { pct: 71.0, resetsAt: now + 4 * DAY, stale: true },
-          thirdParty5h: null,
-          thirdPartyWeekly: null,
-          updatedAt: now - 90 * 1000
-        }
-      },
+      enabledAgents: enabledAgents,
+      quota: quota,
       kpis: {
         costUSD: 4.052,
-        costByAgent: { claude: 4.052, agy: null },
-        unpricedModels: ["gemini-3-pro"],
+        costByAgent: { claude: 4.052, agy: null, codex: null },
+        unpricedModels: [],
         tokens: { input: 320000, output: 48000, cacheRead: 5300000, cacheWrite: 210000 },
         cacheReadRate: 0.912,
-        cacheReadRateByAgent: { claude: 0.948, agy: 0.712 },
+        cacheReadRateByAgent: { claude: 0.948, agy: 0.712, codex: 0.68 },
         toolCalls: 371, toolErrors: 12, toolDenied: 3, toolErrorRate: 0.0323,
         topErrorTools: [
           { name: "Bash", errors: 5, calls: 120 },
@@ -1202,8 +1545,15 @@
   }
 
   function renderAll(data) {
-    renderQuota(data.quota);
-    renderKpis(data.kpis);
+    var enabledAgents = resolveEnabledAgents(data);
+    // 保存済みの絞り込みが無効なエージェントを指していたら「全部」に戻す
+    if (state.agent !== "all" && enabledAgents.indexOf(state.agent) === -1) {
+      state.agent = "all";
+      setStored("agent", "all");
+    }
+    renderToggles(enabledAgents);
+    renderQuota(data.quota, enabledAgents);
+    renderKpis(data.kpis, enabledAgents);
     renderQuestions(data.questions);
     renderSessions(data.sessions);
     renderTasks(data.tasks);
@@ -1236,7 +1586,8 @@
     }
   });
 
-  renderToggles();
+  renderToggles(DEFAULT_ENABLED_AGENTS);
+  refreshConfig(false); // 初期表示用に一度取得(パネルを開くたびにも取り直す)
   loadAndRender().then(function () {
     if (!document.hidden) schedulePoll();
   });

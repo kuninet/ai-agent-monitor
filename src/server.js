@@ -4,7 +4,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { AGENT_IDS } from './agents.js';
 import { AGENTS, RANGES, buildSnapshot, jumpHandle } from './aggregate.js';
+import { getConfig, saveConfig, setOverride } from './config.js';
 import { orcaSwitch } from './proc.js';
 
 const HOST = '127.0.0.1';
@@ -19,11 +21,14 @@ try {
       json: { type: 'boolean', default: false },
       range: { type: 'string', default: 'today' },
       agent: { type: 'string', default: 'all' },
+      agents: { type: 'string' },
     },
   }));
 } catch (e) {
   console.error(e.message);
-  console.error('使い方: node src/server.js [--port 4777] [--json] [--range today|24h|7d|30d|all] [--agent all|claude|agy]');
+  console.error(
+    `使い方: node src/server.js [--port 4777] [--json] [--range today|24h|7d|30d|all] [--agent all|${AGENT_IDS.join('|')}] [--agents ${AGENT_IDS.join(',')}]`,
+  );
   process.exit(1);
 }
 
@@ -31,6 +36,21 @@ const port = Number(args.port);
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   console.error(`不正なポート番号: ${args.port}`);
   process.exit(1);
+}
+
+// --agents が指定されたら、保存した設定より優先する(設定パネルからは変更できなくなる)
+if (args.agents !== undefined) {
+  const list = args.agents
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const unknown = list.filter((v) => !AGENT_IDS.includes(v));
+  if (unknown.length) console.error(`--agents の未知の値を無視します: ${unknown.join(', ')}`);
+  if (list.length === unknown.length) {
+    console.error(`--agents には ${AGENT_IDS.join(', ')} のいずれかを 1 つ以上指定してください`);
+    process.exit(1);
+  }
+  setOverride(list);
 }
 
 const pickRange = (v) => (RANGES.includes(v) ? v : 'today');
@@ -66,8 +86,11 @@ function readBody(req) {
     req.on('data', (c) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error('リクエストが大きすぎます'));
-        req.destroy();
+        const e = new Error('リクエストが大きすぎます');
+        e.code = 'TOO_LARGE';
+        req.removeAllListeners('data');
+        req.resume();
+        reject(e);
         return;
       }
       chunks.push(c);
@@ -105,6 +128,29 @@ function startServer() {
         return send(res, 200, snap);
       }
 
+      if (url.pathname === '/api/config') {
+        if (req.method === 'GET') return send(res, 200, getConfig());
+        if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method not allowed' });
+        const origin = req.headers.origin;
+        if (origin !== undefined && !allowedOrigins.has(origin)) {
+          return send(res, 403, { ok: false, error: 'forbidden origin' });
+        }
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch (e) {
+          if (e.code === 'TOO_LARGE') return send(res, 413, { ok: false, error: e.message });
+          return send(res, 400, { ok: false, error: 'JSON を解釈できません' });
+        }
+        try {
+          return send(res, 200, saveConfig(body?.agents));
+        } catch (e) {
+          if (e.code === 'LOCKED') return send(res, 409, { ok: false, error: e.message });
+          if (e.code === 'INVALID') return send(res, 400, { ok: false, error: e.message });
+          throw e;
+        }
+      }
+
       if (url.pathname === '/api/jump') {
         if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method not allowed' });
         const origin = req.headers.origin;
@@ -114,11 +160,12 @@ function startServer() {
         let body;
         try {
           body = JSON.parse(await readBody(req));
-        } catch {
+        } catch (e) {
+          if (e.code === 'TOO_LARGE') return send(res, 413, { ok: false, error: e.message });
           return send(res, 400, { ok: false, error: 'JSON を解釈できません' });
         }
         const { agent, id } = body ?? {};
-        if (!['claude', 'agy'].includes(agent) || typeof id !== 'string' || !id) {
+        if (!AGENT_IDS.includes(agent) || typeof id !== 'string' || !id) {
           return send(res, 400, { ok: false, error: 'agent と id を指定してください' });
         }
         const handle = await jumpHandle(agent, id);
