@@ -4,6 +4,7 @@ import path from 'node:path';
 import { newCursor, readAppended, readJson } from '../jsonl.js';
 import { costOf } from '../pricing.js';
 import { pendingTextQuestion } from '../textQuestion.js';
+import { gapIntervals, mergeIntervals } from '../work.js';
 import { pidAlive, paneKeyOf, procStarts } from '../proc.js';
 
 const HOME = os.homedir();
@@ -17,6 +18,11 @@ const SUBAGENT_RUNNING_MS = 10 * 60_000;
 // stop_reason が null で tool_use も無い状態は、応答の生成途中(thinking / text を書いた直後)でも起きる。
 // この時間以上更新が無ければ完了とみなす
 const SUBAGENT_SETTLE_MS = 45_000;
+// 作業区間: turn_duration が記録されないターンが多いので、そのターンは行の時刻の間隔から推定する。
+// そのとき tool_use から対応する tool_result までは(間隔が空いていても)作業中とみなす。1 区間の上限
+const TOOL_SPAN_MAX_MS = 60 * 60_000;
+// 人の返事を待つツール。この待ち時間は作業中とみなさない(行の時刻の間隔だけで扱う)
+const HUMAN_WAIT_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 const DENIED_RE = /interrupted|rejected|denied|doesn't want/i;
 
 // transcript ファイルごとの {cursor, state, mtimeMs}
@@ -54,6 +60,12 @@ function newState() {
     lastStop: null, // 最後の assistant メッセージの stop_reason(null のまま書かれることがある)
     lastHasToolUse: false, // 最後の assistant メッセージ(同じ id の全行)に tool_use があるか
     userAfterAssistant: false,
+    // 作業区間: turn_duration の区間と、ターン(人の発話や自動の起点から次の起点まで)ごとの行の時刻
+    turnDurations: new Map(), // uuid → {start, end}
+    turns: [], // {start, times: [], spans: [], td: bool}(spans は tool_use から tool_result までの区間)
+    times: [], // サブエージェントの全行の時刻
+    spans: [], // サブエージェントの tool_use から tool_result までの区間
+    pendingTools: new Map(), // 結果がまだ無い tool_use の id → 時刻
     idleHook: false, // 最後の行が TeammateIdle フック
     stopHook: false, // 最後の行が SubagentStop フック(チームメイトはこの後に TeammateIdle が続く)
   };
@@ -71,6 +83,16 @@ function textOf(content) {
   return content
     .map((b) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text ?? '' : ''))
     .join('\n');
+}
+
+// ターンの起点になる行: 人の発話、自動のターン、チームメイトからの報告(tool_result や isMeta の行は除く)
+function isTurnStart(x) {
+  if (x.type !== 'user' || x.isSidechain) return false;
+  const content = x.message?.content;
+  if (Array.isArray(content) && content.some((b) => b?.type === 'tool_result')) return false;
+  if (x.origin?.kind && x.origin.kind !== 'human') return true;
+  if (isTeammateMessage(content)) return true;
+  return !x.isMeta && !x.isCompactSummary;
 }
 
 // 別のセッションから届いたメッセージ(origin が付かずに user 行として記録される)
@@ -116,6 +138,11 @@ function ingest(st, x, sub) {
   if (ts != null) {
     if (st.startedAt == null || ts < st.startedAt) st.startedAt = ts;
     if (st.updatedAt == null || ts > st.updatedAt) st.updatedAt = ts;
+  }
+  // ターンの起点の行は、前のターンではなく新しいターンに入れる(人が考えていた時間をつながないため)
+  if (ts != null) {
+    if (sub) st.times.push(ts);
+    else if (!x.isSidechain && !isTurnStart(x)) st.turns.at(-1)?.times.push(ts);
   }
   st.idleHook = x.attachment?.hookEvent === 'TeammateIdle';
   st.stopHook = x.attachment?.hookEvent === 'SubagentStop';
@@ -171,6 +198,7 @@ function ingest(st, x, sub) {
         if (st.tools.has(b.id)) continue;
         st.tools.set(b.id, { ts, name: b.name ?? '?', error: false, denied: false });
         st.lastTool = { name: b.name ?? '?', ts };
+        if (ts != null && (sub || !x.isSidechain) && !HUMAN_WAIT_TOOLS.has(b.name)) st.pendingTools.set(b.id, ts);
         if (side) continue;
         const input = b.input ?? {};
         if (b.name === 'AskUserQuestion') {
@@ -213,6 +241,13 @@ function ingest(st, x, sub) {
         const id = r.tool_use_id;
         if (!id) continue;
         st.answered.add(id);
+        const began = st.pendingTools.get(id);
+        if (began != null && ts != null && ts > began) {
+          st.pendingTools.delete(id);
+          const span = { start: began, end: Math.min(ts, began + TOOL_SPAN_MAX_MS) };
+          if (sub) st.spans.push(span);
+          else if (!x.isSidechain) st.turns.at(-1)?.spans.push(span);
+        }
         const t = st.tools.get(id);
         const isErr = r.is_error === true;
         const denied = !!x.toolDenialKind || (isErr && DENIED_RE.test(textOf(r.content)));
@@ -246,18 +281,35 @@ function ingest(st, x, sub) {
       return;
     }
     if (side) return;
+    const startTurn = () => {
+      // 結果が返らないまま次のターンが始まったツール(中断など)は、作業中の区間にしない
+      st.pendingTools.clear();
+      if (ts != null) st.turns.push({ start: ts, times: [], spans: [], td: false });
+    };
     if (x.origin?.kind && x.origin.kind !== 'human') {
       st.auto.push({ ts, kind: x.origin.kind });
+      startTurn();
     } else if (isTeammateMessage(content)) {
       // 別のセッション(チームメイト)からの報告は、人の発話ではない
       st.auto.push({ ts, kind: 'teammate' });
+      startTurn();
     } else if (!x.isMeta && !x.isCompactSummary) {
+      startTurn();
       if (ts != null) st.lastHumanTs = ts;
       if (!st.firstHumanText) {
         const text = textOf(content).trim();
         if (text && !text.startsWith('<')) st.firstHumanText = text.replace(/\s+/g, ' ').slice(0, 60);
       }
     }
+    return;
+  }
+
+  if (x.type === 'system' && x.subtype === 'turn_duration' && typeof x.durationMs === 'number' && ts != null) {
+    if (x.isSidechain && !sub) return;
+    const key = x.uuid ?? `${ts}|${x.durationMs}`;
+    st.turnDurations.set(key, { start: ts - x.durationMs, end: ts });
+    const turn = st.turns.at(-1);
+    if (!sub && turn) turn.td = true;
     return;
   }
 
@@ -421,6 +473,16 @@ function buildSubagent(sub, usageOf, ownMsg, ownTool, parent, parentStatus, now)
   for (const [tid, t] of s.tools) {
     if (ownTool.has(tid)) tools.push({ ts: t.ts, name: t.name, error: t.error, denied: t.denied });
   }
+  // turn_duration の区間と、行の時刻の間隔から作った区間を合わせる(turn_duration は一部のターンにしか記録されない)。
+  // フォークは親の履歴(元の時刻のまま)をコピーしているので、自分の分の最初の応答より前の行は除く
+  let times = s.times;
+  let spans = s.spans;
+  if (meta?.isFork === true && usage.length) {
+    const from = Math.min(...usage.map((u) => u.ts ?? Infinity));
+    times = times.filter((t) => t >= from);
+    spans = spans.filter((w) => w.start >= from);
+  }
+  const work = mergeIntervals([...s.turnDurations.values(), ...gapIntervals(times), ...spans]);
   return {
     id: agentId,
     name: meta?.name || meta?.agentType || agentId,
@@ -434,7 +496,7 @@ function buildSubagent(sub, usageOf, ownMsg, ownTool, parent, parentStatus, now)
     startedAt: s.startedAt,
     updatedAt: s.updatedAt,
     lastTool: s.lastTool ? { ...s.lastTool } : null,
-    events: { usage, tools },
+    events: { usage, tools, work },
   };
 }
 
@@ -522,6 +584,16 @@ function buildSession(file, st, subs, live, sl, now) {
     }
   }
 
+  // 作業区間: turn_duration の区間。記録の無いターンは、今も実行中(live で busy)なら [起点, now]、
+  // それ以外は行の時刻の間隔とツールの実行中の区間から
+  const busy = live?.status === 'busy';
+  const work = [...st.turnDurations.values()];
+  st.turns.forEach((t, i) => {
+    if (t.td) return;
+    if (i === st.turns.length - 1 && busy) work.push({ start: t.start, end: now });
+    else work.push(...gapIntervals([t.start, ...t.times]), ...t.spans);
+  });
+
   // タスク: transcript の復元結果に tasks ディレクトリの内容を上書き
   const tasks = new Map();
   for (const t of st.tasks.values()) tasks.set(t.id, { ...t, blockedBy: [...t.blockedBy] });
@@ -584,7 +656,7 @@ function buildSession(file, st, subs, live, sl, now) {
     live: !!live,
     pid: live?.pid ?? null,
     context,
-    events: { usage, tools, compact: [...st.compact], auto: [...st.auto] },
+    events: { usage, tools, compact: [...st.compact], auto: [...st.auto], work: mergeIntervals(work) },
     subagents: subs.map((x) => buildSubagent(x, usageOf, owned.get(x).msg, owned.get(x).tool, st, status, now)),
     tasks: taskList,
     questions,

@@ -1,6 +1,7 @@
 import { AGENT_DEFS, AGENT_IDS, agentDef } from './agents.js';
 import { enabledAgents, planMonthlyUSD } from './config.js';
 import { orcaTerminals } from './proc.js';
+import { clippedMs } from './work.js';
 
 export const RANGES = ['today', '24h', '7d', '30d', 'all'];
 export const AGENTS = ['all', ...AGENT_IDS];
@@ -63,7 +64,7 @@ function resolveHandle(s, list) {
 
 // サブエージェントの表示用。費用とツール数は期間内のイベントだけで数える。
 // 完了/中断で期間より前に更新が止まったものは出さない(動作中・待機は期間に関係なく残す)
-function subagentRows(s, inRange, since) {
+function subagentRows(s, inRange, since, now) {
   const visible = (s.subagents ?? []).filter(
     (a) => a.status === 'running' || a.status === 'idle' || (a.updatedAt ?? 0) >= since,
   );
@@ -92,6 +93,7 @@ function subagentRows(s, inRange, since) {
       costUSD: agentDef(s.agent)?.priced ? (cost ?? 0) : null,
       toolCalls: calls,
       toolErrors: errors,
+      workMs: clippedMs(a.events.work, since, now),
     };
   });
   rows.sort(
@@ -181,6 +183,9 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
   let autoContinues = 0;
   const taskCount = { open: 0, inProgress: 0, blocked: 0, completed: 0 };
   const sessCount = { total: picked.length, running: 0, question: 0, waiting: 0 };
+
+  // 作業時間(期間内)。サブエージェントは並行して動くので含めない
+  const workByAgent = Object.fromEntries(AGENT_IDS.map((id) => [id, enabled.includes(id) ? 0 : null]));
 
   const sessions = [];
   const tasks = [];
@@ -277,7 +282,9 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       });
     }
 
-    const subagents = subagentRows(s, inRange, since);
+    const subagents = subagentRows(s, inRange, since, now);
+    const workMs = clippedMs(s.events.work, since, now);
+    if (workByAgent[s.agent] != null) workByAgent[s.agent] += workMs;
     sessions.push({
       agent: s.agent,
       id: s.id,
@@ -290,6 +297,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       live: s.live,
       updatedAt: s.updatedAt,
       startedAt: s.startedAt,
+      workMs,
       costUSD: agentDef(s.agent)?.priced ? cost : null,
       cacheReadRate: rate(sCr, sIn),
       toolCalls: sCalls,
@@ -360,6 +368,10 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       compactions,
       droppedTokens,
       autoContinues,
+      work: {
+        totalMs: Object.values(workByAgent).reduce((a, b) => a + (b ?? 0), 0),
+        byAgent: workByAgent,
+      },
       tasks: taskCount,
       questions: questions.filter((q) => q.level === 'question').length,
       requests: questions.filter((q) => q.level === 'request').length,

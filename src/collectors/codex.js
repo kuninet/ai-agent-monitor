@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { newCursor, readAppended } from '../jsonl.js';
 import { codexProcesses } from '../proc.js';
 import { pendingTextQuestion } from '../textQuestion.js';
+import { TURN_GAP_MS, gapIntervals, mergeIntervals, subtractIntervals } from '../work.js';
 
 const HOME = os.homedir();
 const CODEX = path.join(HOME, '.codex');
@@ -43,7 +44,10 @@ function newState() {
     answered: new Set(),
     tasks: [],
     compact: [], // {key, ts}
-    turns: new Map(), // turn_id → {ts, human, completedAt}
+    // turn_id → {ts, human, completedAt, start, end, lastTs, times, waits}
+    //   start / end は作業区間の両端、times はターン中の行の時刻、waits は人の回答待ち(request_user_input)の区間
+    turns: new Map(),
+    pendingInputs: new Map(), // 回答がまだ無い request_user_input の call_id → {ts, turn}
     turnSeq: 0,
     openTurn: null, // 完了していないターンの key
     humans: [], // {key, ts, text}
@@ -123,6 +127,14 @@ function ingest(st, x) {
     if (st.updatedAt == null || ts > st.updatedAt) st.updatedAt = ts;
   }
   const p = x.payload ?? {};
+  // 未完了のターンの最後の行の時刻(作業区間を閉じるため)
+  if (ts != null && st.openTurn && !(x.type === 'event_msg' && p.type === 'task_started')) {
+    const t = st.turns.get(st.openTurn);
+    if (t) {
+      t.lastTs = ts;
+      t.times.push(ts);
+    }
+  }
 
   if (x.type === 'session_meta') {
     if (st.id) return; // 先頭の session_meta がこのスレッド自身
@@ -150,7 +162,10 @@ function ingest(st, x) {
     switch (p.type) {
       case 'task_started': {
         const key = p.turn_id ?? `seq:${st.turnSeq++}`;
-        if (!st.turns.has(key)) st.turns.set(key, { ts, human: false, completedAt: null });
+        if (!st.turns.has(key)) {
+          const start = typeof p.started_at === 'number' ? p.started_at * 1000 : ts;
+          st.turns.set(key, { ts, human: false, completedAt: null, start, end: null, lastTs: ts, times: [], waits: [] });
+        }
         st.openTurn = key;
         st.finalMessage = null;
         if (p.model_context_window) st.windowTokens = p.model_context_window;
@@ -159,14 +174,18 @@ function ingest(st, x) {
       case 'task_complete': {
         const t = st.turns.get(p.turn_id ?? st.openTurn);
         if (t && t.completedAt == null) t.completedAt = ts;
+        if (t && t.end == null) t.end = typeof p.completed_at === 'number' ? p.completed_at * 1000 : ts;
         st.openTurn = null;
         st.finalMessage =
           typeof p.last_agent_message === 'string' && p.last_agent_message.trim() ? { ts, text: p.last_agent_message } : null;
         break;
       }
-      case 'turn_aborted':
+      case 'turn_aborted': {
+        const t = st.turns.get(p.turn_id ?? st.openTurn);
+        if (t && t.end == null) t.end = typeof p.completed_at === 'number' ? p.completed_at * 1000 : ts;
         st.openTurn = null;
         break;
+      }
       case 'user_message':
         human(st, ts, null, p.message);
         break;
@@ -219,6 +238,7 @@ function ingest(st, x) {
           blockedBy: [],
         }));
       } else if (p.name === 'request_user_input' && Array.isArray(args?.questions)) {
+        if (ts != null) st.pendingInputs.set(p.call_id, { ts, turn: st.turns.get(st.openTurn) });
         st.asks.set(p.call_id, {
           ts,
           questions: args.questions.map((q) => ({
@@ -230,6 +250,11 @@ function ingest(st, x) {
     } else if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
       if (!p.call_id) return;
       st.answered.add(p.call_id);
+      const wait = st.pendingInputs.get(p.call_id);
+      if (wait) {
+        st.pendingInputs.delete(p.call_id);
+        if (ts != null && ts > wait.ts) wait.turn?.waits.push({ start: wait.ts, end: ts });
+      }
       const t = st.tools.get(p.call_id);
       if (t) Object.assign(t, classifyOutput(p.output));
     }
@@ -381,16 +406,31 @@ function claimer() {
     const compact = s.compact.filter((c) => take('compact', c.key)).map((c) => ({ ts: c.ts, droppedTokens: null }));
     // 人間の発話が無いまま完了したターンは自動続行とみなす(重複を除いた後のターンで判定)
     const auto = [];
+    const turns = [];
     for (const [key, t] of s.turns) {
-      if (take('turn', key) && t.completedAt != null && !t.human) auto.push({ ts: t.completedAt, kind: 'system' });
+      if (!take('turn', key)) continue;
+      turns.push({ key, ...t });
+      if (t.completedAt != null && !t.human) auto.push({ ts: t.completedAt, kind: 'system' });
     }
     const tools = [];
     for (const [cid, t] of s.tools) {
       if (take('tool', cid)) tools.push({ ts: t.ts, name: t.name, error: t.error, denied: t.denied });
     }
     const humans = s.humans.filter((h) => take('human', h.key));
-    return { usage, compact, auto, tools, firstHumanText: humans.find((h) => h.text)?.text ?? null };
+    return { usage, compact, auto, tools, turns, firstHumanText: humans.find((h) => h.text)?.text ?? null };
   };
+}
+
+// 作業区間: 自分の分のターンの [開始, 完了または中断]。今も進んでいるターンは now まで、止まったままのターンは最後の行まで。
+// ターンの中で行の間隔が TURN_GAP_MS を超えたところと、人の回答待ち(request_user_input)は除く
+function workOf(s, turns, running, now) {
+  const out = [];
+  for (const t of turns) {
+    const end = t.end ?? (running && t.key === s.openTurn ? now : t.lastTs ?? t.start);
+    const spans = gapIntervals([t.start, ...t.times.filter((x) => x > t.start && x < end), end], TURN_GAP_MS);
+    out.push(...subtractIntervals(spans, t.waits));
+  }
+  return mergeIntervals(out);
 }
 
 // 親セッション 1 件分を組み立てる。親 → 子(開始順)の順に走査し、重複は先に現れたファイルの分とする
@@ -449,7 +489,7 @@ function buildSession(node, kids, alive, now) {
       startedAt: k.st.startedAt,
       updatedAt: k.st.updatedAt,
       lastTool: last ? { name: last.name, ts: last.ts } : null,
-      events: { usage: km.usage, tools: km.tools },
+      events: { usage: km.usage, tools: km.tools, work: workOf(k.st, km.turns, kStatus === 'running', now) },
       extra: { compact: km.compact, auto: km.auto },
     };
   });
@@ -481,6 +521,8 @@ function buildSession(node, kids, alive, now) {
       tools: [...mine.tools, ...subagents.flatMap((a) => a.events.tools)],
       compact: [...mine.compact, ...subagents.flatMap((a) => a.extra.compact)],
       auto: [...mine.auto, ...subagents.flatMap((a) => a.extra.auto)],
+      // サブエージェントは並行して動くので、作業区間は親の分だけ
+      work: workOf(st, mine.turns, status === 'running', now),
     },
     subagents: subagents.map(({ extra, ...a }) => a),
     tasks: st.tasks.map((t) => ({ ...t, blockedBy: [] })),
