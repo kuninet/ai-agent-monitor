@@ -13,6 +13,7 @@
   },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning src/server.js",
-    "snapshot": "node --no-warnings=ExperimentalWarning src/server.js --json"
+    "snapshot": "node --no-warnings=ExperimentalWarning src/server.js --json",
+    "setup-statusline": "node src/setup-statusline.js"
   }
 }
