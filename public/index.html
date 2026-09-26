@@ -894,7 +894,7 @@
   };
   // Claude Code の使用枠は statusline の入力を保存しないと取れない。保存が無いときに案内する README の節
   var CLAUDE_QUOTA_HELP_URL = "https://github.com/kuninet/ai-agent-monitor#使用枠5-時間枠週次枠を表示する設定";
-  // agy は statusline を有効にしていないと入力を書き出さない。その設定を案内する README の節
+  // agy の使用枠も statusline の入力を保存しないと取れない。保存が無いときに案内する README の節
   var AGY_QUOTA_HELP_URL = "https://github.com/kuninet/ai-agent-monitor#antigravity-cli";
   function renderQuota(quota, enabledAgents) {
     clear(quotaGrid);
@@ -921,7 +921,8 @@
       }
       if (agentId === "agy" && !quota.agy) {
         card.appendChild(el("div", { class: "quota-hint" }, [
-          "agy の statusline を有効にすると表示されます(",
+          el("code", { text: "npm run setup-statusline -- --agy" }),
+          " で設定できます(",
           el("a", { href: AGY_QUOTA_HELP_URL, target: "_blank", rel: "noopener noreferrer", text: "詳細" }),
           ")"
         ]));

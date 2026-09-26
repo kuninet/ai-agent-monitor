@@ -118,21 +118,33 @@ printf '%s' "$input" | node /path/to/ai-agent-monitor/src/statusline-save.js
 
 ### Antigravity CLI
 
-agy の statusline を有効にしてください。agy は statusline を使っているときだけ、その入力を `~/.gemini/antigravity-cli/last_statusline_input.json` に書き出します。statusline を使っていないとこのファイルが作られず、使用枠・コンテキスト使用率・モデル名は「データなし」になります(会話やツールの集計は表示されます)。
+このリポジトリで `npm run setup-statusline -- --agy` を実行してください。使用枠のほか、セッションごとのコンテキスト使用率とモデル名もこの設定で表示されるようになります。設定が無くても、会話やツールの集計は表示されます。
 
-statusline は `~/.gemini/antigravity-cli/settings.json` の `statusLine` で設定します。表示に使うスクリプトは何でもかまいません。
+変更前と変更後の `command` を表示し、確認のうえ `~/.gemini/antigravity-cli/settings.json` の `statusLine.command` に保存用スクリプトを挟みます。書き込む前に元のファイルを `settings.json.bak` に保存します。`statusLine` が無い場合は、保存だけを行う `statusLine` を `"enabled": true` で追加します。`"enabled": false` になっている場合は書き換えないので、agy の設定で有効にしてください。元に戻すときは `npm run setup-statusline -- --agy --remove` を実行します。
+
+仕組みは Claude Code と同じです。agy が statusline に渡す JSON を、`src/statusline-save.js --agy` が `~/.ai-status/agy/<conversation_id>.json` に保存します。メールアドレスは保存前に取り除きます。statusline に何を表示するかは関係ありません。保存は agy が statusline を呼ぶたびに行われるので、ダッシュボードが止まっている間の分も残ります。
+
+```
+agy → statusline-save.js --agy --tee → 今の statusline のスクリプト
+                    ↓
+          ~/.ai-status/agy/<conversation_id>.json
+```
+
+#### 手で設定する場合
+
+`~/.gemini/antigravity-cli/settings.json` の `statusLine.command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --agy --tee | ` を付けます。statusline を使っていない場合は、`command` を `node /path/to/ai-agent-monitor/src/statusline-save.js --agy` にします。パスの書き方は Claude Code の場合と同じです。
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "node /path/to/statusline.js",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js --agy --tee | node /path/to/statusline.js",
     "enabled": true
   }
 }
 ```
 
-ダッシュボードは、このファイルを起動中に会話ごと `~/.ai-status/agy/` へ保存します。そのため使用量とコンテキスト使用率が出るのは、ダッシュボードが起動している間に statusline が更新された会話だけです。
+自作の statusline スクリプトで入力を `~/.gemini/antigravity-cli/last_statusline_input.json` に書き出している場合は、そのファイルも引き続き読みます。
 
 ## 読み込むファイル
 
@@ -146,8 +158,9 @@ statusline は `~/.gemini/antigravity-cli/settings.json` の `statusLine` で設
 | agy の会話記録 | `~/.gemini/antigravity{,-cli}/brain/<id>/.system_generated/logs/transcript.jsonl` |
 | agy のタスク | `~/.gemini/antigravity{,-cli}/brain/<id>/task.md` |
 | agy の会話一覧 | `~/.gemini/antigravity{,-cli}/conversation_summaries.db` |
+| agy の statusline 入力 | `~/.ai-status/agy/<conversation_id>.json` と、あれば `~/.gemini/antigravity-cli/last_statusline_input.json` |
 
-ダッシュボードが書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。agy の statusline 入力を会話ごとに保存し、メールアドレスは保存前に取り除きます。Claude Code の statusline から `src/statusline-save.js` を呼ぶよう設定した場合は、その入力が `~/.ai-status/claude/` に保存されます。`npm run setup-statusline` は、確認のうえ `~/.claude/settings.json` とそのバックアップ `settings.json.bak` に書き込みます。
+ダッシュボードが書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。`last_statusline_input.json` がある場合は、その内容を会話ごとに `~/.ai-status/agy/` へ写し、メールアドレスは保存前に取り除きます。statusline から `src/statusline-save.js` を呼ぶよう設定した場合は、その入力が `~/.ai-status/claude/`(`--agy` 付きなら `~/.ai-status/agy/`)に保存されます。`npm run setup-statusline` は、確認のうえ `~/.claude/settings.json`(`--agy` 付きなら `~/.gemini/antigravity-cli/settings.json`)とそのバックアップ `settings.json.bak` に書き込みます。
 
 各指標の定義と判定ルールは [docs/DESIGN.md](docs/DESIGN.md) にまとめています。
 
