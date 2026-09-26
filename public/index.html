@@ -1,0 +1,1246 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Agent Monitor</title>
+<style>
+  :root {
+    --bg: #f3f3f5;
+    --fg: #1c1c1e;
+    --muted: #6e6e73;
+    --border: #d7d7db;
+    --card-bg: #ffffff;
+    --header-bg: #ffffff;
+    --bar-track: #e5e5ea;
+    --subagent-bg: #f0eff4;
+    --accent-claude: #d97757;
+    --accent-agy: #4285f4;
+    --status-good: #1a8a4a;
+    --status-warning: #b8790a;
+    --status-critical: #cc3333;
+    --status-muted: #8a8a8f;
+    --focus-ring: #4285f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a1c;
+      --fg: #f2f2f4;
+      --muted: #a5a5aa;
+      --border: #3a3a3d;
+      --card-bg: #262628;
+      --header-bg: #262628;
+      --bar-track: #3a3a3d;
+      --subagent-bg: #211f26;
+      --accent-claude: #e3906c;
+      --accent-agy: #6ba0f7;
+      --status-good: #3fbf74;
+      --status-warning: #e0a530;
+      --status-critical: #ec5b5b;
+      --status-muted: #9a9aa0;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  a { color: inherit; }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+  }
+  .header-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+  }
+  .app-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 0;
+    white-space: nowrap;
+  }
+  .btn-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .btn {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .btn.active {
+    background: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+    font-weight: 700;
+  }
+  .header-status {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .conn-error {
+    color: var(--status-critical);
+    font-weight: 700;
+  }
+  .fetch-errors {
+    color: var(--status-warning);
+    font-weight: 700;
+  }
+
+  main {
+    padding: 16px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  section { margin-bottom: 28px; }
+  section h2 {
+    font-size: 14px;
+    margin: 0 0 10px;
+    font-weight: 700;
+  }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+
+  /* サブスク枠 */
+  .quota-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .quota-card-title {
+    font-weight: 700;
+    font-size: 13px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .quota-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+  }
+  .quota-dot.claude { background: var(--accent-claude); }
+  .quota-dot.agy { background: var(--accent-agy); }
+  .quota-plan {
+    font-size: 12px;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+  .quota-row {
+    display: grid;
+    grid-template-columns: 88px 1fr 84px 132px;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  .quota-label { color: var(--fg); }
+  .quota-empty { color: var(--muted); grid-column: 2 / span 3; }
+  .bar-track {
+    background: var(--bar-track);
+    border-radius: 5px;
+    height: 8px;
+    overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 5px; }
+  .bar-fill.bar-good { background: var(--status-good); }
+  .bar-fill.bar-warning { background: var(--status-warning); }
+  .bar-fill.bar-critical { background: var(--status-critical); }
+  .bar-fill.bar-stale { opacity: 0.4; }
+  .quota-pct { text-align: right; color: var(--fg); }
+  .quota-reset { color: var(--muted); text-align: right; }
+
+  /* KPI */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .kpi-tile {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .kpi-tile.kpi-critical {
+    border-color: var(--status-critical);
+  }
+  .kpi-title { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .kpi-big { font-size: 22px; font-weight: 700; color: var(--fg); }
+  .kpi-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+  /* テーブル共通 */
+  .table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 640px;
+    font-size: 12px;
+  }
+  thead th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 700;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  td.wrap { white-space: normal; min-width: 130px; max-width: 260px; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.row-dim { opacity: 0.55; }
+
+  .status-cell { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .status-dot { font-weight: 700; }
+  .status-dot.st-running { color: var(--status-good); }
+  .status-dot.st-question { color: var(--status-warning); }
+  .status-dot.st-waiting { color: var(--status-muted); }
+  .status-dot.st-ended { color: var(--status-muted); }
+  .status-text { color: var(--fg); }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+  }
+  .badge.badge-claude { background: var(--accent-claude); }
+  .badge.badge-agy { background: var(--accent-agy); }
+
+  .ctx-cell { display: flex; align-items: center; gap: 6px; min-width: 90px; }
+  .ctx-cell .bar-track { width: 56px; flex: 0 0 auto; }
+  .ctx-cell .ctx-pct { color: var(--fg); font-size: 11px; }
+
+  /* サブエージェント(改訂2) */
+  .sa-cell { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .sa-toggle {
+    border: none;
+    background: none;
+    color: var(--fg);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+    line-height: 1;
+  }
+  .sa-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  tr.subagent-row td {
+    background: var(--subagent-bg);
+    padding: 5px 10px 5px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .subagent-grid {
+    display: grid;
+    grid-template-columns: 14px 76px 120px 90px 90px minmax(140px, 220px) 130px 60px 96px;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .subagent-indent { color: var(--muted); }
+  .subagent-ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .jump-btn {
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .jump-btn:hover { border-color: var(--muted); }
+  .jump-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+  .empty-state {
+    color: var(--muted);
+    font-size: 12px;
+    padding: 10px 4px;
+  }
+
+  .task-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 16px;
+    margin-bottom: 8px;
+    font-size: 12px;
+  }
+  .checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    color: var(--fg);
+  }
+
+  #toast-container {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 100;
+    max-width: calc(100vw - 32px);
+  }
+  .toast {
+    background: var(--fg);
+    color: var(--bg);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    max-width: 320px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.toast-error { background: var(--status-critical); color: #fff; }
+  .toast.toast-success { background: var(--status-good); color: #fff; }
+
+  @media (max-width: 480px) {
+    main { padding: 12px; }
+    .app-title { font-size: 14px; }
+    .quota-row { grid-template-columns: 70px 1fr 60px 96px; font-size: 11px; }
+    .kpi-big { font-size: 19px; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="header-row">
+      <h1 class="app-title">AI Agent Monitor</h1>
+      <div class="btn-group" id="range-group" role="group" aria-label="期間"></div>
+      <div class="btn-group" id="agent-group" role="group" aria-label="エージェント"></div>
+      <div class="header-status">
+        <span id="fetch-errors" class="fetch-errors" hidden></span>
+        <span id="conn-error" class="conn-error" hidden>接続エラー</span>
+        <span id="last-updated">最終更新: --:--:--</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="quota-section">
+      <h2>サブスク枠</h2>
+      <div class="quota-grid" id="quota-grid"></div>
+    </section>
+
+    <section id="kpi-section">
+      <h2>KPI</h2>
+      <div class="kpi-grid" id="kpi-grid"></div>
+    </section>
+
+    <section id="questions-section">
+      <h2>未回答の質問</h2>
+      <div id="questions-body"></div>
+    </section>
+
+    <section id="sessions-section">
+      <h2>セッション</h2>
+      <div id="sessions-body"></div>
+    </section>
+
+    <section id="tasks-section">
+      <h2>タスク</h2>
+      <div class="task-controls">
+        <label class="checkbox-label">
+          <input type="checkbox" id="show-ended-sessions">
+          終了セッションも表示
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="show-completed">
+          完了も表示
+        </label>
+      </div>
+      <div id="tasks-body"></div>
+    </section>
+  </main>
+
+  <div id="toast-container" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var IS_MOCK = new URLSearchParams(location.search).get("mock") === "1";
+
+  var STORAGE_PREFIX = "ai-status:";
+  function getStored(key, fallback) {
+    try {
+      var raw = localStorage.getItem(STORAGE_PREFIX + key);
+      if (raw === null) return fallback;
+      return JSON.parse(raw);
+    } catch (e) {
+      return fallback;
+    }
+  }
+  function setStored(key, value) {
+    try {
+      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+    } catch (e) {
+      /* 保存できない環境では無視 */
+    }
+  }
+
+  var RANGE_OPTIONS = [
+    { value: "today", label: "今日" },
+    { value: "24h", label: "24h" },
+    { value: "7d", label: "7日" },
+    { value: "30d", label: "30日" },
+    { value: "all", label: "全期間" }
+  ];
+  var AGENT_OPTIONS = [
+    { value: "all", label: "全部" },
+    { value: "claude", label: "Claude" },
+    { value: "agy", label: "agy" }
+  ];
+
+  var state = {
+    range: getStored("range", "today"),
+    agent: getStored("agent", "all"),
+    showCompleted: getStored("showCompleted", false),
+    showEndedSessions: getStored("showEndedSessions", false)
+  };
+  if (!RANGE_OPTIONS.some(function (o) { return o.value === state.range; })) state.range = "today";
+  if (!AGENT_OPTIONS.some(function (o) { return o.value === state.agent; })) state.agent = "all";
+
+  var lastData = null;
+  var pollTimer = null;
+
+  /* ---------- DOM ヘルパー(innerHTML は使わない) ---------- */
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (key) {
+        var value = attrs[key];
+        if (value === null || value === undefined) return;
+        if (key === "class") node.className = value;
+        else if (key === "text") node.textContent = value;
+        else if (key === "title") node.title = value;
+        else if (key.indexOf("on") === 0 && typeof value === "function") {
+          node.addEventListener(key.slice(2), value);
+        } else {
+          node.setAttribute(key, value);
+        }
+      });
+    }
+    (children || []).forEach(function (child) {
+      if (child === null || child === undefined) return;
+      if (typeof child === "string") node.appendChild(document.createTextNode(child));
+      else node.appendChild(child);
+    });
+    return node;
+  }
+  function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  /* ---------- フォーマッタ ---------- */
+  function fmtMan(n) {
+    if (n === null || n === undefined) return "—";
+    if (Math.abs(n) < 10000) return n.toLocaleString("ja-JP");
+    var man = n / 10000;
+    var text = man.toFixed(1);
+    if (text.slice(-2) === ".0") text = text.slice(0, -2);
+    return text + "万";
+  }
+  function fmtUSD(n) {
+    if (n === null || n === undefined) return "—";
+    return "$" + n.toFixed(2);
+  }
+  function fmtPct100(n) {
+    if (n === null || n === undefined) return "—";
+    return n.toFixed(1) + "%";
+  }
+  function fmtFraction(n) {
+    if (n === null || n === undefined) return "—";
+    return (n * 100).toFixed(1) + "%";
+  }
+  function pad2(n) { return String(n).padStart(2, "0"); }
+  function fmtResetTime(ms) {
+    if (ms === null || ms === undefined) return "";
+    var d = new Date(ms);
+    var hh = pad2(d.getHours());
+    var mm = pad2(d.getMinutes());
+    if (ms - Date.now() >= 24 * 3600 * 1000) {
+      return pad2(d.getMonth() + 1) + "/" + pad2(d.getDate()) + " " + hh + ":" + mm;
+    }
+    return hh + ":" + mm;
+  }
+  function fmtRelative(ts) {
+    if (ts === null || ts === undefined) return "—";
+    var diff = Date.now() - ts;
+    if (diff < 60 * 1000) return "たった今";
+    if (diff < 3600 * 1000) return Math.floor(diff / (60 * 1000)) + "分前";
+    if (diff < 86400 * 1000) return Math.floor(diff / (3600 * 1000)) + "時間前";
+    var d = new Date(ts);
+    return pad2(d.getMonth() + 1) + "/" + pad2(d.getDate());
+  }
+  function barClass(pct) {
+    if (pct === null || pct === undefined) return null;
+    if (pct >= 90) return "bar-critical";
+    if (pct >= 70) return "bar-warning";
+    return "bar-good";
+  }
+  function barIcon(cls) {
+    if (cls === "bar-critical") return "⛔ ";
+    if (cls === "bar-warning") return "⚠ ";
+    return "";
+  }
+
+  /* ---------- ヘッダー(期間/エージェント切替) ---------- */
+  var rangeGroup = document.getElementById("range-group");
+  var agentGroup = document.getElementById("agent-group");
+
+  function buildToggleGroup(container, options, currentValue, onSelect) {
+    clear(container);
+    options.forEach(function (opt) {
+      var btn = el("button", {
+        class: "btn" + (opt.value === currentValue ? " active" : ""),
+        type: "button",
+        text: opt.label,
+        "aria-pressed": opt.value === currentValue ? "true" : "false",
+        onclick: function () { onSelect(opt.value); }
+      });
+      container.appendChild(btn);
+    });
+  }
+  function renderToggles() {
+    buildToggleGroup(rangeGroup, RANGE_OPTIONS, state.range, function (value) {
+      state.range = value;
+      setStored("range", value);
+      renderToggles();
+      loadAndRender();
+    });
+    buildToggleGroup(agentGroup, AGENT_OPTIONS, state.agent, function (value) {
+      state.agent = value;
+      setStored("agent", value);
+      renderToggles();
+      loadAndRender();
+    });
+  }
+
+  var lastUpdatedEl = document.getElementById("last-updated");
+  var connErrorEl = document.getElementById("conn-error");
+  var fetchErrorsEl = document.getElementById("fetch-errors");
+  function renderHeaderStatus(generatedAt, hasError, errors) {
+    connErrorEl.hidden = !hasError;
+    if (errors && errors.length) {
+      fetchErrorsEl.hidden = false;
+      fetchErrorsEl.textContent = "⚠ 取得エラー " + errors.length + "件";
+      fetchErrorsEl.title = errors.join("\n");
+    } else {
+      fetchErrorsEl.hidden = true;
+      fetchErrorsEl.title = "";
+    }
+    if (generatedAt) {
+      var d = new Date(generatedAt);
+      lastUpdatedEl.textContent = "最終更新: " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+    }
+  }
+
+  /* ---------- サブスク枠 ---------- */
+  var quotaGrid = document.getElementById("quota-grid");
+  function quotaRow(label, data) {
+    var row = el("div", { class: "quota-row" }, [
+      el("span", { class: "quota-label", text: label })
+    ]);
+    if (!data || data.pct === null || data.pct === undefined) {
+      row.appendChild(el("span", { class: "quota-empty", text: "データなし(statusline未取得)" }));
+      return row;
+    }
+    var cls = barClass(data.pct);
+    var track = el("div", { class: "bar-track" }, [
+      el("div", { class: "bar-fill " + cls + (data.stale ? " bar-stale" : "") })
+    ]);
+    track.firstChild.style.width = Math.max(0, Math.min(100, data.pct)) + "%";
+    row.appendChild(track);
+    row.appendChild(el("span", { class: "quota-pct", text: barIcon(cls) + fmtPct100(data.pct) }));
+    var resetText = data.resetsAt ? ("リセット " + fmtResetTime(data.resetsAt)) : "";
+    if (data.stale) resetText = resetText ? (resetText + " ・古いデータ") : "古いデータ";
+    row.appendChild(el("span", { class: "quota-reset", text: resetText }));
+    return row;
+  }
+  function renderQuota(quota) {
+    clear(quotaGrid);
+    quota = quota || {};
+
+    var claudeCard = el("div", { class: "card" }, [
+      el("div", { class: "quota-card-title" }, [
+        el("span", { class: "quota-dot claude" }),
+        el("span", { text: "Claude" })
+      ])
+    ]);
+    var c = quota.claude;
+    claudeCard.appendChild(quotaRow("5h枠", c ? c.fiveHour : null));
+    claudeCard.appendChild(quotaRow("週次枠", c ? c.weekly : null));
+    quotaGrid.appendChild(claudeCard);
+
+    var agy = quota.agy;
+    var agyTitle = el("div", { class: "quota-card-title" }, [
+      el("span", { class: "quota-dot agy" }),
+      el("span", { text: "agy" })
+    ]);
+    if (agy && agy.plan) {
+      agyTitle.appendChild(el("span", { class: "quota-plan", text: agy.plan }));
+    }
+    var agyCard = el("div", { class: "card" }, [agyTitle]);
+    agyCard.appendChild(quotaRow("Gemini 5h", agy ? agy.gemini5h : null));
+    agyCard.appendChild(quotaRow("Gemini週次", agy ? agy.geminiWeekly : null));
+    agyCard.appendChild(quotaRow("3P 5h", agy ? agy.thirdParty5h : null));
+    agyCard.appendChild(quotaRow("3P週次", agy ? agy.thirdPartyWeekly : null));
+    quotaGrid.appendChild(agyCard);
+  }
+
+  /* ---------- KPI ---------- */
+  var kpiGrid = document.getElementById("kpi-grid");
+  function kpiTile(title, big, sub, isCritical) {
+    var tile = el("div", { class: "kpi-tile" + (isCritical ? " kpi-critical" : "") }, [
+      el("div", { class: "kpi-title", text: title }),
+      el("div", { class: "kpi-big", text: big })
+    ]);
+    if (sub) tile.appendChild(el("div", { class: "kpi-sub", text: sub }));
+    return tile;
+  }
+  function renderKpis(kpis) {
+    clear(kpiGrid);
+    kpis = kpis || {};
+
+    var costSub = "API換算";
+    if (kpis.unpricedModels && kpis.unpricedModels.length) {
+      costSub = "単価不明: " + kpis.unpricedModels.join(", ");
+    }
+    kpiGrid.appendChild(kpiTile("費用(API換算)", fmtUSD(kpis.costUSD), costSub));
+
+    var cabAgent = kpis.cacheReadRateByAgent || {};
+    kpiGrid.appendChild(kpiTile(
+      "キャッシュ読込率",
+      fmtFraction(kpis.cacheReadRate),
+      "Claude " + fmtFraction(cabAgent.claude) + " / agy " + fmtFraction(cabAgent.agy)
+    ));
+
+    var errSub = (kpis.toolErrors === null || kpis.toolErrors === undefined ? "—" : kpis.toolErrors) +
+      " / " + (kpis.toolCalls === null || kpis.toolCalls === undefined ? "—" : kpis.toolCalls) + "件";
+    if (kpis.topErrorTools && kpis.topErrorTools.length) {
+      errSub += "。上位: " + kpis.topErrorTools[0].name + " " + kpis.topErrorTools[0].errors + "件";
+    }
+    kpiGrid.appendChild(kpiTile("ツールエラー率", fmtFraction(kpis.toolErrorRate), errSub));
+
+    kpiGrid.appendChild(kpiTile(
+      "文脈の読み落とし",
+      (kpis.compactions === null || kpis.compactions === undefined ? "—" : kpis.compactions) + "回",
+      "破棄 " + fmtMan(kpis.droppedTokens) + " tok"
+    ));
+
+    kpiGrid.appendChild(kpiTile(
+      "自動続行",
+      (kpis.autoContinues === null || kpis.autoContinues === undefined ? "—" : kpis.autoContinues) + "件",
+      "人間以外のターン開始"
+    ));
+
+    var tasks = kpis.tasks || {};
+    kpiGrid.appendChild(kpiTile(
+      "タスク(未完)",
+      (tasks.open === null || tasks.open === undefined ? "—" : tasks.open) + "件",
+      "ブロッカー " + (tasks.blocked || 0) + "件 · 完了 " + (tasks.completed || 0) + "件"
+    ));
+
+    var q = kpis.questions || 0;
+    kpiGrid.appendChild(kpiTile(
+      (q > 0 ? "⚠ " : "") + "未回答の質問",
+      q + "件",
+      q > 0 ? "対応が必要です" : "なし",
+      q > 0
+    ));
+  }
+
+  /* ---------- 未回答の質問 ---------- */
+  var questionsBody = document.getElementById("questions-body");
+  var QUESTION_KIND_LABEL = { ask: "選択式", text: "文中" };
+  function renderQuestions(questions) {
+    clear(questionsBody);
+    questions = questions || [];
+    if (questions.length === 0) {
+      questionsBody.appendChild(el("div", { class: "empty-state", text: "未回答の質問はありません" }));
+      return;
+    }
+    var scroll = el("div", { class: "table-scroll" });
+    var table = el("table");
+    table.appendChild(el("thead", null, [
+      el("tr", null, [
+        el("th", { text: "エージェント" }),
+        el("th", { text: "セッション" }),
+        el("th", { text: "経過" }),
+        el("th", { text: "種別" }),
+        el("th", { text: "質問" }),
+        el("th", { text: "選択肢" })
+      ])
+    ]));
+    var tbody = el("tbody");
+    questions.forEach(function (q) {
+      tbody.appendChild(el("tr", null, [
+        el("td", null, [badge(q.agent)]),
+        el("td", { class: "wrap", title: q.project || "", text: q.sessionTitle || q.sessionId }),
+        el("td", { text: fmtRelative(q.ts) }),
+        el("td", { text: QUESTION_KIND_LABEL[q.kind] || q.kind }),
+        el("td", { class: "wrap", text: q.text }),
+        el("td", { class: "wrap", text: (q.options && q.options.length) ? q.options.join(", ") : "—" })
+      ]));
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    questionsBody.appendChild(scroll);
+  }
+
+  /* ---------- セッション ---------- */
+  var sessionsBody = document.getElementById("sessions-body");
+  var SESSION_COLUMN_COUNT = 13;
+  var STATUS_INFO = {
+    running: { symbol: "●", text: "実行中", cls: "st-running" },
+    question: { symbol: "?", text: "質問待ち", cls: "st-question" },
+    waiting: { symbol: "○", text: "入力待ち", cls: "st-waiting" },
+    ended: { symbol: "–", text: "終了", cls: "st-ended" }
+  };
+  function statusCell(status) {
+    var info = STATUS_INFO[status] || { symbol: "?", text: status, cls: "" };
+    return el("span", { class: "status-cell" }, [
+      el("span", { class: "status-dot " + info.cls, text: info.symbol }),
+      el("span", { class: "status-text", text: info.text })
+    ]);
+  }
+  function badge(agent) {
+    return el("span", {
+      class: "badge badge-" + agent,
+      text: agent === "claude" ? "Claude" : "agy"
+    });
+  }
+
+  /* ---------- サブエージェント(改訂2) ---------- */
+  // 開閉状態はメモリのみで保持(ポーリングをまたいで維持、リロードでは既定に戻る)
+  var subagentOpenState = {};
+  function sessionKey(s) { return s.agent + ":" + s.id; }
+  function isSubagentsOpen(s) {
+    var key = sessionKey(s);
+    if (Object.prototype.hasOwnProperty.call(subagentOpenState, key)) return subagentOpenState[key];
+    var running = (s.subagentSummary && s.subagentSummary.running) || 0;
+    return running > 0;
+  }
+  var SUBAGENT_STATUS_INFO = {
+    running: { symbol: "●", text: "動作中", cls: "st-running" },
+    idle: { symbol: "⏸", text: "待機", cls: "st-waiting" },
+    done: { symbol: "✔", text: "完了", cls: "st-ended" },
+    ended: { symbol: "–", text: "中断", cls: "st-ended" }
+  };
+  function subagentStatusCell(status) {
+    var info = SUBAGENT_STATUS_INFO[status] || { symbol: "?", text: status, cls: "" };
+    return el("span", { class: "status-cell" }, [
+      el("span", { class: "status-dot " + info.cls, text: info.symbol }),
+      el("span", { class: "status-text", text: info.text })
+    ]);
+  }
+  function subagentRow(sub) {
+    var flags = [];
+    if (sub.isTeammate) flags.push("チームメイト");
+    if (sub.isFork) flags.push("フォーク");
+    var nameText = (sub.name || sub.id) + (flags.length ? "(" + flags.join("・") + ")" : "");
+    var lastToolText = sub.lastTool ? (sub.lastTool.name + " " + fmtRelative(sub.lastTool.ts)) : "—";
+    var grid = el("div", { class: "subagent-grid" }, [
+      el("span", { class: "subagent-indent", text: "└" }),
+      subagentStatusCell(sub.status),
+      el("span", { class: "subagent-ellipsis", title: nameText, text: nameText }),
+      el("span", { class: "subagent-ellipsis", text: sub.type || "—" }),
+      el("span", { class: "subagent-ellipsis", text: sub.model || "—" }),
+      el("span", { class: "subagent-ellipsis", title: sub.description || "", text: sub.description || "—" }),
+      el("span", { class: "subagent-ellipsis", text: lastToolText }),
+      el("span", { text: fmtUSD(sub.costUSD) }),
+      el("span", { text: (sub.toolCalls || 0) + "件・Err " + (sub.toolErrors || 0) })
+    ]);
+    return el("tr", { class: "subagent-row" }, [
+      el("td", { colspan: String(SESSION_COLUMN_COUNT) }, [grid])
+    ]);
+  }
+  function saCell(session) {
+    var subs = session.subagents || [];
+    var cell = el("td");
+    if (subs.length === 0) {
+      cell.appendChild(el("span", { text: "—" }));
+      return cell;
+    }
+    var open = isSubagentsOpen(session);
+    var summary = session.subagentSummary || { total: subs.length, running: 0 };
+    var wrap = el("span", { class: "sa-cell" }, [
+      el("button", {
+        class: "sa-toggle",
+        type: "button",
+        text: open ? "▾" : "▸",
+        "aria-label": open ? "サブエージェントを折りたたむ" : "サブエージェントを展開",
+        onclick: function () {
+          subagentOpenState[sessionKey(session)] = !isSubagentsOpen(session);
+          if (lastData) renderSessions(lastData.sessions);
+        }
+      }),
+      el("span", { text: summary.running + "/" + summary.total })
+    ]);
+    cell.appendChild(wrap);
+    return cell;
+  }
+  function ctxCell(context) {
+    context = context || {};
+    var wrap = el("div", { class: "ctx-cell" });
+    if (context.pct === null || context.pct === undefined) {
+      wrap.appendChild(el("span", { class: "ctx-pct", text: "—" }));
+      return wrap;
+    }
+    var cls = barClass(context.pct);
+    var track = el("div", { class: "bar-track" }, [el("div", { class: "bar-fill " + cls })]);
+    track.firstChild.style.width = Math.max(0, Math.min(100, context.pct)) + "%";
+    wrap.appendChild(track);
+    wrap.appendChild(el("span", { class: "ctx-pct", text: barIcon(cls) + fmtPct100(context.pct) }));
+    return wrap;
+  }
+  function renderSessions(sessions) {
+    clear(sessionsBody);
+    sessions = sessions || [];
+    if (sessions.length === 0) {
+      sessionsBody.appendChild(el("div", { class: "empty-state", text: "表示対象のセッションはありません" }));
+      return;
+    }
+    var scroll = el("div", { class: "table-scroll" });
+    var table = el("table");
+    table.appendChild(el("thead", null, [
+      el("tr", null, [
+        el("th", { text: "状態" }),
+        el("th", { text: "エージェント" }),
+        el("th", { text: "SA" }),
+        el("th", { text: "タイトル" }),
+        el("th", { text: "プロジェクト" }),
+        el("th", { text: "モデル" }),
+        el("th", { text: "ctx" }),
+        el("th", { text: "費用" }),
+        el("th", { text: "キャッシュ率" }),
+        el("th", { text: "Err" }),
+        el("th", { text: "圧縮" }),
+        el("th", { text: "更新" }),
+        el("th", { text: "" })
+      ])
+    ]));
+    var tbody = el("tbody");
+    sessions.forEach(function (s) {
+      var jumpCell = el("td");
+      if (s.canJump) {
+        jumpCell.appendChild(el("button", {
+          class: "jump-btn",
+          type: "button",
+          text: "↗",
+          "aria-label": "ジャンプ",
+          onclick: function () { jumpTo(s.agent, s.id); }
+        }));
+      }
+      tbody.appendChild(el("tr", null, [
+        el("td", null, [statusCell(s.status)]),
+        el("td", null, [badge(s.agent)]),
+        saCell(s),
+        el("td", { class: "wrap", text: s.title || s.id }),
+        el("td", { class: "wrap", title: s.cwd || "", text: (s.project || "") + (s.branch ? " (" + s.branch + ")" : "") }),
+        el("td", { text: s.model || "—" }),
+        el("td", null, [ctxCell(s.context)]),
+        el("td", { text: fmtUSD(s.costUSD) }),
+        el("td", { text: fmtFraction(s.cacheReadRate) }),
+        el("td", { text: (s.toolErrors || 0) + "/" + (s.toolCalls || 0) }),
+        el("td", { text: String(s.compactions || 0) }),
+        el("td", { text: fmtRelative(s.updatedAt) }),
+        jumpCell
+      ]));
+      var subs = s.subagents || [];
+      if (subs.length && isSubagentsOpen(s)) {
+        subs.forEach(function (sub) {
+          tbody.appendChild(subagentRow(sub));
+        });
+      }
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    sessionsBody.appendChild(scroll);
+  }
+
+  /* ---------- タスク ---------- */
+  var tasksBody = document.getElementById("tasks-body");
+  var TASK_STATUS_INFO = {
+    pending: { symbol: "⏸", text: "未着手" },
+    in_progress: { symbol: "▶", text: "進行中" },
+    completed: { symbol: "✔", text: "完了" }
+  };
+  function renderTasks(tasks) {
+    clear(tasksBody);
+    tasks = tasks || [];
+    var visible = tasks.filter(function (t) {
+      if (!state.showCompleted && t.status === "completed") return false;
+      if (!state.showEndedSessions && t.sessionStatus === "ended") return false;
+      return true;
+    });
+    if (visible.length === 0) {
+      tasksBody.appendChild(el("div", { class: "empty-state", text: "表示対象のタスクはありません" }));
+      return;
+    }
+    var scroll = el("div", { class: "table-scroll" });
+    var table = el("table");
+    table.appendChild(el("thead", null, [
+      el("tr", null, [
+        el("th", { text: "エージェント" }),
+        el("th", { text: "セッション" }),
+        el("th", { text: "ID" }),
+        el("th", { text: "状態" }),
+        el("th", { text: "タイトル" }),
+        el("th", { text: "Blocker" })
+      ])
+    ]));
+    var tbody = el("tbody");
+    visible.forEach(function (t) {
+      var info = TASK_STATUS_INFO[t.status] || { symbol: "?", text: t.status };
+      var statusSpan = el("span", { class: "status-cell" }, [
+        el("span", { class: "status-dot", text: info.symbol }),
+        el("span", { class: "status-text", text: info.text })
+      ]);
+      var blockerText = (t.blockedBy && t.blockedBy.length)
+        ? t.blockedBy.map(function (id) { return "#" + id; }).join(", ")
+        : "—";
+      tbody.appendChild(el("tr", { class: t.sessionStatus === "ended" ? "row-dim" : null }, [
+        el("td", null, [badge(t.agent)]),
+        el("td", { class: "wrap", title: t.project || "", text: t.sessionTitle || t.sessionId }),
+        el("td", { text: "#" + t.id }),
+        el("td", null, [statusSpan]),
+        el("td", { class: "wrap", text: t.title }),
+        el("td", { text: blockerText })
+      ]));
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    tasksBody.appendChild(scroll);
+  }
+
+  var showCompletedCheckbox = document.getElementById("show-completed");
+  showCompletedCheckbox.checked = !!state.showCompleted;
+  showCompletedCheckbox.addEventListener("change", function () {
+    state.showCompleted = showCompletedCheckbox.checked;
+    setStored("showCompleted", state.showCompleted);
+    if (lastData) renderTasks(lastData.tasks);
+  });
+
+  var showEndedSessionsCheckbox = document.getElementById("show-ended-sessions");
+  showEndedSessionsCheckbox.checked = !!state.showEndedSessions;
+  showEndedSessionsCheckbox.addEventListener("change", function () {
+    state.showEndedSessions = showEndedSessionsCheckbox.checked;
+    setStored("showEndedSessions", state.showEndedSessions);
+    if (lastData) renderTasks(lastData.tasks);
+  });
+
+  /* ---------- トースト ---------- */
+  var toastContainer = document.getElementById("toast-container");
+  function showToast(message, type) {
+    var toast = el("div", { class: "toast" + (type ? " toast-" + type : ""), text: message });
+    toastContainer.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add("show"); });
+    setTimeout(function () {
+      toast.classList.remove("show");
+      setTimeout(function () { toast.remove(); }, 250);
+    }, 4000);
+  }
+
+  /* ---------- ジャンプ ---------- */
+  function jumpTo(agent, id) {
+    if (IS_MOCK) {
+      var ok = id.indexOf("-fail") === -1;
+      showToast(ok ? "ジャンプしました" : "ジャンプに失敗しました(モック)", ok ? "success" : "error");
+      return;
+    }
+    fetch("/api/jump", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: agent, id: id })
+    }).then(function (res) {
+      return res.json().catch(function () { return { ok: false, error: "レスポンス解析失敗" }; });
+    }).then(function (data) {
+      if (data && data.ok) {
+        showToast("ジャンプしました", "success");
+      } else {
+        showToast("ジャンプに失敗しました" + (data && data.error ? ": " + data.error : ""), "error");
+      }
+    }).catch(function () {
+      showToast("ジャンプに失敗しました", "error");
+    });
+  }
+
+  /* ---------- モックデータ(?mock=1 のときのみ有効) ---------- */
+  function buildMockSnapshot(range, agentFilter) {
+    var now = Date.now();
+    var MIN = 60 * 1000, HOUR = 3600 * 1000, DAY = 86400 * 1000;
+
+    var allSessions = [
+      {
+        agent: "claude", id: "sess-claude-1", title: "ダッシュボードの実装を進める",
+        project: "ai-agent-monitor", cwd: "/Users/dev/git/ai-agent-monitor", branch: "main", model: "claude-sonnet-5",
+        status: "running", live: true, updatedAt: now - 20 * 1000, startedAt: now - 2 * HOUR,
+        costUSD: 0.842, cacheReadRate: 0.948, toolCalls: 132, toolErrors: 2, compactions: 0, autoContinues: 1,
+        context: { usedTokens: 84000, windowTokens: 200000, pct: 42.0 },
+        openTasks: 3, questions: 0, canJump: true,
+        subagentSummary: { total: 2, running: 1 },
+        subagents: [
+          {
+            id: "sub-fork-1", name: "sess-claude-1-fork", type: "general-purpose", model: "claude-sonnet-5",
+            description: "別ブランチでテストケースを並行調査するフォーク",
+            isFork: true, isTeammate: false, status: "running",
+            startedAt: now - 5 * MIN, updatedAt: now - 10 * 1000,
+            lastTool: { name: "Bash", ts: now - 10 * 1000 },
+            costUSD: 0.05, toolCalls: 4, toolErrors: 1
+          },
+          {
+            id: "sub-teammate-1", name: "reviewer", type: "general-purpose", model: "claude-sonnet-5",
+            description: "変更内容をレビューしてコメントするチームメイト",
+            isFork: false, isTeammate: true, status: "idle",
+            startedAt: now - 30 * MIN, updatedAt: now - 2 * MIN,
+            lastTool: { name: "Read", ts: now - 3 * MIN },
+            costUSD: 0.12, toolCalls: 8, toolErrors: 0
+          }
+        ]
+      },
+      {
+        agent: "claude", id: "sess-claude-2", title: "PR レビューのコメント対応",
+        project: "infra-tools", cwd: "/Users/dev/git/infra-tools", branch: "fix/timeout", model: "claude-opus-5-5",
+        status: "question", live: true, updatedAt: now - 6 * MIN, startedAt: now - 5 * HOUR,
+        costUSD: 3.21, cacheReadRate: 0.71, toolCalls: 58, toolErrors: 5, compactions: 1, autoContinues: 0,
+        context: { usedTokens: 178000, windowTokens: 200000, pct: 89.0 },
+        openTasks: 1, questions: 1, canJump: false,
+        subagentSummary: { total: 0, running: 0 }, subagents: []
+      },
+      {
+        agent: "agy", id: "sess-agy-1", title: "API スキーマのリファクタリング検討",
+        project: "billing-service", cwd: "/Users/dev/git/billing-service", branch: "main", model: "gemini-3-pro",
+        status: "waiting", live: true, updatedAt: now - 40 * MIN, startedAt: now - 1 * DAY,
+        costUSD: null, cacheReadRate: 0.62, toolCalls: 21, toolErrors: 0, compactions: 0, autoContinues: 2,
+        context: { usedTokens: 30000, windowTokens: 1000000, pct: 3.0 },
+        openTasks: 2, questions: 0, canJump: true,
+        subagentSummary: { total: 2, running: 1 },
+        subagents: [
+          {
+            id: "agy-child-1", name: "sub-agent-a", type: "code-explorer", model: null,
+            description: "既存エンドポイントのコードを探索",
+            isFork: false, isTeammate: false, status: "running",
+            startedAt: now - 20 * MIN, updatedAt: now - 1 * MIN,
+            lastTool: { name: "grep", ts: now - 1 * MIN },
+            costUSD: null, toolCalls: 15, toolErrors: 0
+          },
+          {
+            id: "agy-child-2", name: "sub-agent-b", type: "test-writer", model: null,
+            description: "移行後のテストコードを作成",
+            isFork: false, isTeammate: false, status: "done",
+            startedAt: now - 25 * MIN, updatedAt: now - 15 * MIN,
+            lastTool: { name: "write_file", ts: now - 15 * MIN },
+            costUSD: null, toolCalls: 6, toolErrors: 0
+          }
+        ]
+      },
+      {
+        agent: "agy", id: "sess-agy-2-fail", title: "ログ収集バッチのデバッグ",
+        project: "log-collector", cwd: "/Users/dev/git/log-collector", branch: null, model: "gemini-3-flash",
+        status: "question", live: true, updatedAt: now - 2 * MIN, startedAt: now - 3 * HOUR,
+        costUSD: null, cacheReadRate: 0.55, toolCalls: 12, toolErrors: 1, compactions: 0, autoContinues: 0,
+        context: { usedTokens: 12000, windowTokens: 1000000, pct: 1.2 },
+        openTasks: 0, questions: 1, canJump: true,
+        subagentSummary: { total: 0, running: 0 }, subagents: []
+      },
+      {
+        agent: "claude", id: "sess-claude-3", title: "旧セッション(終了済み)",
+        project: "ai-agent-monitor", cwd: "/Users/dev/git/ai-agent-monitor", branch: "main", model: "claude-sonnet-5",
+        status: "ended", live: false, updatedAt: now - 3 * DAY, startedAt: now - 3 * DAY - 2 * HOUR,
+        costUSD: 0.15, cacheReadRate: 0.80, toolCalls: 9, toolErrors: 0, compactions: 0, autoContinues: 0,
+        context: { usedTokens: 5000, windowTokens: 200000, pct: 2.5 },
+        openTasks: 0, questions: 0, canJump: false,
+        subagentSummary: { total: 0, running: 0 }, subagents: []
+      }
+    ];
+
+    var allQuestions = [
+      {
+        agent: "claude", sessionId: "sess-claude-2", sessionTitle: "PR レビューのコメント対応", project: "infra-tools",
+        ts: now - 6 * MIN, kind: "ask",
+        text: "このタイムアウト値はどちらにしますか?",
+        options: ["30秒に固定する", "設定可能にする"]
+      },
+      {
+        agent: "agy", sessionId: "sess-agy-2-fail", sessionTitle: "ログ収集バッチのデバッグ", project: "log-collector",
+        ts: now - 2 * MIN, kind: "text",
+        text: "このリトライ処理は既存の再送キューと統合してよいでしょうか?",
+        options: []
+      }
+    ];
+
+    var allTasks = [
+      { agent: "claude", sessionId: "sess-claude-1", sessionTitle: "ダッシュボードの実装を進める", sessionStatus: "running", project: "ai_status", id: "1", title: "KPI タイルの実装", status: "in_progress", blockedBy: [], activeForm: "KPI タイルを実装中" },
+      { agent: "claude", sessionId: "sess-claude-1", sessionTitle: "ダッシュボードの実装を進める", sessionStatus: "running", project: "ai_status", id: "2", title: "セッション表の実装", status: "pending", blockedBy: ["1"], activeForm: null },
+      { agent: "claude", sessionId: "sess-claude-1", sessionTitle: "ダッシュボードの実装を進める", sessionStatus: "running", project: "ai_status", id: "3", title: "モックデータの整備", status: "completed", blockedBy: [], activeForm: null },
+      { agent: "agy", sessionId: "sess-agy-1", sessionTitle: "API スキーマのリファクタリング検討", sessionStatus: "waiting", project: "billing-service", id: "1", title: "既存エンドポイントの調査", status: "completed", blockedBy: [], activeForm: null },
+      { agent: "agy", sessionId: "sess-agy-1", sessionTitle: "API スキーマのリファクタリング検討", sessionStatus: "waiting", project: "billing-service", id: "1.2", title: "移行計画のドラフト作成", status: "pending", blockedBy: [], activeForm: null },
+      { agent: "claude", sessionId: "sess-claude-3", sessionTitle: "旧セッション(終了済み)", sessionStatus: "ended", project: "ai_status", id: "1", title: "残っていた未完了タスク", status: "pending", blockedBy: [], activeForm: null }
+    ];
+
+    var filteredSessions = agentFilter === "all" ? allSessions : allSessions.filter(function (s) { return s.agent === agentFilter; });
+    var filteredQuestions = agentFilter === "all" ? allQuestions : allQuestions.filter(function (q) { return q.agent === agentFilter; });
+    var filteredTasks = agentFilter === "all" ? allTasks : allTasks.filter(function (t) { return t.agent === agentFilter; });
+
+    return {
+      generatedAt: now,
+      range: range,
+      agent: agentFilter,
+      quota: {
+        claude: { fiveHour: { pct: 42.5, resetsAt: now + 2 * HOUR, stale: false }, weekly: null, updatedAt: now - 30 * 1000 },
+        agy: {
+          plan: "Google AI Ultra",
+          gemini5h: { pct: 15.0, resetsAt: now + 3 * HOUR, stale: false },
+          geminiWeekly: { pct: 71.0, resetsAt: now + 4 * DAY, stale: true },
+          thirdParty5h: null,
+          thirdPartyWeekly: null,
+          updatedAt: now - 90 * 1000
+        }
+      },
+      kpis: {
+        costUSD: 4.052,
+        costByAgent: { claude: 4.052, agy: null },
+        unpricedModels: ["gemini-3-pro"],
+        tokens: { input: 320000, output: 48000, cacheRead: 5300000, cacheWrite: 210000 },
+        cacheReadRate: 0.912,
+        cacheReadRateByAgent: { claude: 0.948, agy: 0.712 },
+        toolCalls: 371, toolErrors: 12, toolDenied: 3, toolErrorRate: 0.0323,
+        topErrorTools: [
+          { name: "Bash", errors: 5, calls: 120 },
+          { name: "Edit", errors: 3, calls: 60 },
+          { name: "WebFetch", errors: 2, calls: 15 }
+        ],
+        compactions: 2, droppedTokens: 45000,
+        autoContinues: 6,
+        tasks: { open: 3, inProgress: 1, blocked: 1, completed: 2 },
+        questions: filteredQuestions.length,
+        sessions: {
+          total: filteredSessions.length,
+          running: filteredSessions.filter(function (s) { return s.status === "running"; }).length,
+          question: filteredSessions.filter(function (s) { return s.status === "question"; }).length,
+          waiting: filteredSessions.filter(function (s) { return s.status === "waiting"; }).length
+        }
+      },
+      sessions: filteredSessions,
+      tasks: filteredTasks,
+      questions: filteredQuestions,
+      errors: ["agy コレクタ: conversation_summaries.db を開けませんでした(モック)"]
+    };
+  }
+
+  /* ---------- 取得・描画ループ ---------- */
+  function fetchSnapshot() {
+    if (IS_MOCK) {
+      return Promise.resolve(buildMockSnapshot(state.range, state.agent));
+    }
+    var params = new URLSearchParams({ range: state.range, agent: state.agent });
+    return fetch("/api/snapshot?" + params.toString()).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+
+  function renderAll(data) {
+    renderQuota(data.quota);
+    renderKpis(data.kpis);
+    renderQuestions(data.questions);
+    renderSessions(data.sessions);
+    renderTasks(data.tasks);
+    renderHeaderStatus(data.generatedAt, false, data.errors);
+  }
+
+  function loadAndRender() {
+    return fetchSnapshot().then(function (data) {
+      lastData = data;
+      renderAll(data);
+    }).catch(function () {
+      renderHeaderStatus(lastData ? lastData.generatedAt : null, true, lastData ? lastData.errors : null);
+    });
+  }
+
+  function schedulePoll() {
+    clearTimeout(pollTimer);
+    // fetch 中にタブが非表示になった場合、ここで打ち切ってポーリングを止める
+    if (document.hidden) return;
+    pollTimer = setTimeout(function () {
+      loadAndRender().then(schedulePoll);
+    }, 5000);
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      clearTimeout(pollTimer);
+    } else {
+      loadAndRender().then(schedulePoll);
+    }
+  });
+
+  renderToggles();
+  loadAndRender().then(function () {
+    if (!document.hidden) schedulePoll();
+  });
+})();
+</script>
+</body>
+</html>
