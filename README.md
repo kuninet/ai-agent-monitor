@@ -33,6 +33,7 @@ Windows(ネイティブ)で使うときは次の点に注意してください�
 - Windows ネイティブで動かしているエージェントのログだけを集計します。WSL 側で動かしているエージェントのログは読みません
 - ログの場所の `~` は `%USERPROFILE%`(`C:\Users\<ユーザー名>`)です
 - Orca の ↗ ボタンは出ません
+- PowerShell で `npm` が「このシステムではスクリプトの実行が無効になっている」というエラーになる場合は、`npm.cmd run setup-statusline` のように `npm.cmd` を使うか、`node src/setup-statusline.js` のように直接実行してください
 
 ## 起動
 
@@ -120,25 +121,27 @@ printf '%s' "$input" | node /path/to/ai-agent-monitor/src/statusline-save.js
 
 このリポジトリで `npm run setup-statusline -- --agy` を実行してください。使用枠のほか、セッションごとのコンテキスト使用率とモデル名もこの設定で表示されるようになります。設定が無くても、会話やツールの集計は表示されます。
 
-変更前と変更後の `command` を表示し、確認のうえ `~/.gemini/antigravity-cli/settings.json` の `statusLine.command` に保存用スクリプトを挟みます。書き込む前に元のファイルを `settings.json.bak` に保存します。`statusLine` が無い場合は、保存だけを行う `statusLine` を `"enabled": true` で追加します。`"enabled": false` になっている場合は書き換えないので、agy の設定で有効にしてください。元に戻すときは `npm run setup-statusline -- --agy --remove` を実行します。
+変更前と変更後の `command` を表示し、確認のうえ `~/.gemini/antigravity-cli/settings.json` の `statusLine.command` に保存用スクリプトを挟みます。書き込む前に元のファイルを `settings.json.bak` に保存します。`statusLine` が無い場合は、保存だけを行う `statusLine` を `"enabled": true` で追加します。`"enabled": false` になっている場合は書き換えないので、agy の設定で有効にしてください。元に戻すときは `npm run setup-statusline -- --agy --remove` を実行します。agy は設定を起動時にしか読まないので、設定したあとは agy を起動し直してください。
 
-仕組みは Claude Code と同じです。agy が statusline に渡す JSON を、`src/statusline-save.js --agy` が `~/.ai-status/agy/<conversation_id>.json` に保存します。メールアドレスは保存前に取り除きます。statusline に何を表示するかは関係ありません。保存は agy が statusline を呼ぶたびに行われるので、ダッシュボードが止まっている間の分も残ります。
+agy が statusline に渡す JSON を、`src/statusline-save.js --agy` が `~/.ai-status/agy/<conversation_id>.json` に保存します。メールアドレスは保存前に取り除きます。statusline に何を表示するかは関係ありません。保存は agy が statusline を呼ぶたびに行われるので、ダッシュボードが止まっている間の分も残ります。
+
+Windows の agy は statusline のコマンドをシェルを通さずに実行するため、パイプや引用符は使えません。そこで Claude Code の場合と違い、`statusline-save.js --agy -- <今のコマンド>` の形にして、`--` より後ろの今のコマンドを `statusline-save.js` が起動し、入力を渡します。このため、`statusline-save.js` のパスに空白が含まれる場合は設定できません(`setup-statusline` は書き込まずに理由を表示します)。以前の `--agy --tee | ` の形で設定してある場合は、`npm run setup-statusline -- --agy` を実行すると今の形への書き換えを提案します。
 
 ```
-agy → statusline-save.js --agy --tee → 今の statusline のスクリプト
+agy → statusline-save.js --agy -- 今の statusline のスクリプト
                     ↓
           ~/.ai-status/agy/<conversation_id>.json
 ```
 
 #### 手で設定する場合
 
-`~/.gemini/antigravity-cli/settings.json` の `statusLine.command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --agy --tee | ` を付けます。statusline を使っていない場合は、`command` を `node /path/to/ai-agent-monitor/src/statusline-save.js --agy` にします。パスの書き方は Claude Code の場合と同じです。
+`~/.gemini/antigravity-cli/settings.json` の `statusLine.command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --agy -- ` を付けます。statusline を使っていない場合は、`command` を `node /path/to/ai-agent-monitor/src/statusline-save.js --agy` にします。Windows ではパスを `C:/Users/<ユーザー名>/git/ai-agent-monitor/src/statusline-save.js` のようにスラッシュで書き、引用符で囲まないでください。今のコマンドも、引用符やパイプを使わない形にしてください。
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js --agy --tee | node /path/to/statusline.js",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js --agy -- node /path/to/statusline.js",
     "enabled": true
   }
 }

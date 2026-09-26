@@ -3,7 +3,8 @@
 //   node src/setup-statusline.js            確認のうえ設定する
 //   node src/setup-statusline.js --remove   設定を取り除く
 //   --yes を付けると確認を省略する
-//   --agy を付けると Antigravity CLI(agy)の statusLine.command に statusline-save.js --agy を挟む
+//   --agy を付けると Antigravity CLI(agy)の statusLine.command に statusline-save.js --agy を挟む。
+//   agy 用は、以前の形(`--agy --tee | …`)を見つけたら今の形(`--agy -- …`)への書き換えを提案する
 // 設定ファイルは ~/.claude/settings.json(CLAUDE_CONFIG_DIR があればそのディレクトリ)。
 // --agy のときは ~/.gemini/antigravity-cli/settings.json(CLAUDE_CONFIG_DIR は見ない)
 import fs from 'node:fs';
@@ -46,10 +47,14 @@ const configDir = args.agy
   ? path.join(os.homedir(), '.gemini', 'antigravity-cli')
   : process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const settingsPath = path.join(configDir, 'settings.json');
-// Windows でもシェル(bash)から実行されるのでスラッシュ区切りにし、空白を含むパスに備えて囲む
+// パスはスラッシュ区切りにする(Claude Code は Windows でもシェル(bash)から実行する)
 const scriptPath = fileURLToPath(new URL('./statusline-save.js', import.meta.url)).replaceAll('\\', '/');
-const saveCmd = `node "${scriptPath}"${args.agy ? ' --agy' : ''}`;
-const prefix = `${saveCmd} --tee | `;
+// Claude Code はシェル経由で実行するので、空白を含むパスに備えて引用符で囲み、パイプで今のコマンドにつなぐ。
+// agy(Windows 版)はシェルを通さず、空白で区切ってそのまま実行する(引用符は外れず、パイプも使えない)。
+// そのため agy 用は引用符もパイプも使わず、statusline-save.js の `--` の後ろに今のコマンドを続けて、
+// statusline-save.js に子プロセスとして起動させる。空白を含むパスは書けないので、その場合は書き込まない
+const saveCmd = args.agy ? `node ${scriptPath} --agy` : `node "${scriptPath}"`;
+const prefix = args.agy ? `${saveCmd} -- ` : `${saveCmd} --tee | `;
 // 表示用の呼び出し名
 const SAVE_NAME = `statusline-save.js${args.agy ? ' --agy' : ''}`;
 
@@ -57,17 +62,52 @@ const SAVE_NAME = `statusline-save.js${args.agy ? ' --agy' : ''}`;
 const SAVE_ARG = String.raw`(?:"[^"]*statusline-save\.js"|'[^']*statusline-save\.js'|\S*statusline-save\.js)`;
 // statusline-save.js の呼び出しと、その後ろのオプション(--tee, --agy)
 const CALL_RE = new RegExp(String.raw`node\s+${SAVE_ARG}((?:\s+--[\w-]+)*)`, 'g');
-// Claude Code 用は --agy なし、agy 用は --agy あり(--tee との順序は問わない)
-const PREFIX_RE = args.agy
-  ? new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s+(?:--agy\s+--tee|--tee\s+--agy)\s*\|\s*`)
-  : new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s+--tee\s*\|\s*`);
+// 先頭に挟んだ呼び出し。Claude Code 用は --agy なし。
+// agy 用は今の形(`--agy -- `)と、以前の形(`--agy --tee | `、--tee との順序は問わない)
+const PREFIX_RES = args.agy
+  ? [
+      new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s+--agy\s+--\s+`),
+      new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s+(?:--agy\s+--tee|--tee\s+--agy)\s*\|\s*`),
+    ]
+  : [new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s+--tee\s*\|\s*`)];
 const ONLY_RE = args.agy
   ? new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s+--agy\s*$`)
   : new RegExp(String.raw`^\s*node\s+${SAVE_ARG}\s*$`);
+// agy 用で今の形とみなすもの(パスを引用符で囲まない形)。PREFIX_RES / ONLY_RE に合うがこれに合わないものは、
+// シェルを通さない agy では動かない以前の形として、書き換えを提案する
+const PLAIN_SAVE_ARG = String.raw`[^\s"']*statusline-save\.js`;
+const CURRENT_RES = [
+  new RegExp(String.raw`^\s*node\s+${PLAIN_SAVE_ARG}\s+--agy\s+--\s+\S`),
+  new RegExp(String.raw`^\s*node\s+${PLAIN_SAVE_ARG}\s+--agy\s*$`),
+];
+// シェルを通さないと働かない記法(引用符、パイプ・リダイレクトなど、変数、先頭の ~)
+const SHELL_SYNTAX_RE = /["'|&;<>$`]|(?:^|\s)~/;
 
 function fail(msg) {
   console.error(msg);
   process.exit(1);
+}
+
+// 先頭に挟んだ呼び出しを取り除いた残りを返す。呼び出しだけなら ''、先頭に無ければ null
+function strip(cur) {
+  if (ONLY_RE.test(cur)) return '';
+  const re = PREFIX_RES.find((r) => r.test(cur));
+  return re ? cur.replace(re, '') : null;
+}
+
+// agy 用の command を作る。agy はシェルを通さないので、空白を含むパスは書けない
+function agyCommand(rest) {
+  if (/\s/.test(scriptPath)) {
+    fail(
+      [
+        'statusline-save.js のパスに空白が含まれるため、書き込みません。',
+        `  ${scriptPath}`,
+        'agy は statusline のコマンドをシェルを通さずに空白で区切って実行するので、空白を含むパスは使えません。',
+        'このリポジトリを空白を含まない場所に置いてから、もう一度実行してください。',
+      ].join('\n'),
+    );
+  }
+  return rest.trim() ? prefix + rest : saveCmd;
 }
 
 // command の中の statusline-save.js の呼び出しを、今回の対象用(mine)ともう一方用(other)に分ける
@@ -126,33 +166,41 @@ function plan(settings) {
   const c = calls(cur);
   if (!args.remove) {
     if (c.mine) {
+      const rest = args.agy && !CURRENT_RES.some((re) => re.test(cur)) ? strip(cur) : null;
+      if (rest !== null) {
+        // 以前の形(引用符やパイプを使う形)。今の形に書き換える
+        console.log(`statusLine.command は以前の形で ${SAVE_NAME} を呼んでいます。`);
+        console.log('agy はシェルを通さずに実行するため、引用符やパイプを使うこの形では動きません。今の形に書き換えます。');
+        const next = agyCommand(rest);
+        return { before: cur, after: next, rest, settings: { ...settings, statusLine: { ...sl, command: next } } };
+      }
       console.log(`設定済みです。statusLine.command は既に ${SAVE_NAME} を呼んでいます。`);
       console.log(`  ${cur}`);
       process.exit(0);
     }
     if (c.other) exitOtherForm(cur);
-    const next = cur.trim() ? prefix + cur : saveCmd;
+    const next = args.agy ? agyCommand(cur) : cur.trim() ? prefix + cur : saveCmd;
     // 既存の statusLine の他のキー(padding や agy の enabled など)は残す
     let statusLine;
     if (sl) statusLine = { ...sl, command: next };
     else statusLine = args.agy ? { type: 'command', command: next, enabled: true } : { type: 'command', command: next };
-    return { before: cur || null, after: next, settings: { ...settings, statusLine } };
+    return { before: cur || null, after: next, rest: cur, settings: { ...settings, statusLine } };
   }
   if (!c.mine) {
     if (c.other) exitOtherForm(cur);
     console.log(`statusLine.command は ${SAVE_NAME} を呼んでいないため、取り除くものはありません。`);
     process.exit(0);
   }
-  if (ONLY_RE.test(cur)) {
+  const next = strip(cur);
+  if (next === '') {
     const { statusLine, ...rest } = settings;
     return { before: cur, after: null, settings: rest };
   }
-  if (!PREFIX_RE.test(cur)) {
+  if (next === null) {
     console.log(`statusLine.command の先頭以外で ${SAVE_NAME} を呼んでいるため、自動では取り除けません。`);
     console.log(`  ${cur}`);
     process.exit(0);
   }
-  const next = cur.replace(PREFIX_RE, '');
   return { before: cur, after: next, settings: { ...settings, statusLine: { ...sl, command: next } } };
 }
 
@@ -193,6 +241,11 @@ console.log(`設定ファイル: ${settingsPath}${exists ? '' : '(新規作成)'
 console.log(`変更前: ${p.before ?? '(statusLine なし)'}`);
 console.log(`変更後: ${p.after ?? '(statusLine を削除)'}`);
 // agy は statusLine.enabled が false だと statusline を呼ばないので保存もされない。enabled は触らずに知らせる
+if (args.agy && !args.remove && SHELL_SYNTAX_RE.test(p.rest)) {
+  console.log(
+    '注意: 今のコマンドに引用符やパイプなど、シェルの記法が含まれています。agy はシェルを通さずに実行するので、Windows の agy ではこのままでは動かない可能性があります。',
+  );
+}
 if (args.agy && !args.remove && p.settings.statusLine?.enabled === false) {
   console.log('注意: statusLine.enabled が false です。agy の設定で statusline を有効にするまで、使用枠は保存されません。');
 }
