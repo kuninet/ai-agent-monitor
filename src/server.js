@@ -143,7 +143,7 @@ function startServer() {
           return send(res, 400, { ok: false, error: 'JSON を解釈できません' });
         }
         try {
-          return send(res, 200, saveConfig(body?.agents));
+          return send(res, 200, saveConfig(body));
         } catch (e) {
           if (e.code === 'LOCKED') return send(res, 409, { ok: false, error: e.message });
           if (e.code === 'INVALID') return send(res, 400, { ok: false, error: e.message });

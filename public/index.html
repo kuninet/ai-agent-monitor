@@ -175,6 +175,32 @@
     color: var(--muted);
     margin-top: 8px;
   }
+  .settings-plan-title { margin-top: 12px; }
+  .settings-plan-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .settings-plan-row.is-saving { opacity: 0.55; }
+  .settings-plan-input {
+    width: 90px;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 12px;
+  }
+  .settings-plan-input[disabled] { cursor: not-allowed; }
+  .settings-plan-row.is-saving .settings-plan-input { cursor: progress; }
+  .settings-plan-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .settings-note {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
 
   main {
     padding: 16px;
@@ -435,6 +461,8 @@
         <div class="settings-panel-title">監視するエージェント</div>
         <div id="settings-agent-list"></div>
         <div id="settings-locked-note" class="settings-locked-note" hidden>起動オプション --agents で指定されています</div>
+        <div class="settings-panel-title settings-plan-title">Claude プランの月額</div>
+        <div id="settings-plan-section"></div>
       </div>
     </div>
   </header>
@@ -483,6 +511,8 @@
   "use strict";
 
   var IS_MOCK = new URLSearchParams(location.search).get("mock") === "1";
+  // ?mock=1&unpriced=1 で「単価表に無いモデルがある」ケースの見た目を確認できるようにする
+  var MOCK_SHOW_UNPRICED = new URLSearchParams(location.search).get("unpriced") === "1";
 
   var STORAGE_PREFIX = "ai-status:";
   function getStored(key, fallback) {
@@ -749,24 +779,45 @@
 
   /* ---------- KPI ---------- */
   var kpiGrid = document.getElementById("kpi-grid");
-  function kpiTile(title, big, sub, isCritical) {
+  function kpiTile(title, big, sub, isCritical, subTitle) {
     var tile = el("div", { class: "kpi-tile" + (isCritical ? " kpi-critical" : "") }, [
       el("div", { class: "kpi-title", text: title }),
       el("div", { class: "kpi-big", text: big })
     ]);
-    if (sub) tile.appendChild(el("div", { class: "kpi-sub", text: sub }));
+    if (sub) tile.appendChild(el("div", { class: "kpi-sub", title: subTitle || null, text: sub }));
     return tile;
+  }
+  // 月額に対する倍率の書式。小数1桁、10倍以上は整数
+  function fmtRatio(n) {
+    if (n >= 10) return String(Math.round(n));
+    return n.toFixed(1);
   }
   function renderKpis(kpis, enabledAgents) {
     clear(kpiGrid);
     kpis = kpis || {};
     enabledAgents = enabledAgents || DEFAULT_ENABLED_AGENTS;
 
-    var costSub = "API換算";
-    if (kpis.unpricedModels && kpis.unpricedModels.length) {
-      costSub = "単価不明: " + kpis.unpricedModels.join(", ");
+    var mtd = kpis.monthToDate || null;
+    var claudeEnabledForCost = !!(mtd && mtd.claudeCostUSD !== null && mtd.claudeCostUSD !== undefined);
+    var costSub, costSubTitle = null;
+    var unpricedForNote = null; // 補足行の内容に応じて、当月分/表示中の期間分のどちらを見るか切り替える
+    if (!claudeEnabledForCost) {
+      costSub = "Claude が無効です";
+    } else if (mtd.planMonthlyUSD !== null && mtd.planMonthlyUSD !== undefined && typeof mtd.ratio === "number") {
+      costSub = "今月 " + fmtUSD(mtd.claudeCostUSD) + "・月額の " + fmtRatio(mtd.ratio) + "倍";
+      unpricedForNote = mtd.unpricedModels; // 当月分
+    } else {
+      costSub = "請求額ではありません";
+      costSubTitle = "API の単価で換算した参考値です。⚙ からプランの月額を設定すると、今月の利用額と比べられます";
+      unpricedForNote = kpis.unpricedModels; // 表示中の期間の分
     }
-    kpiGrid.appendChild(kpiTile("費用(API換算)", fmtUSD(kpis.costUSD), costSub));
+    // 単価表に無いモデルがあるときは、Claude が無効な場合を除いて末尾に注記する
+    if (claudeEnabledForCost && unpricedForNote && unpricedForNote.length) {
+      costSub += "・⚠ 単価不明あり";
+      var unpricedTitle = "単価表に無いモデルは換算額に含まれていません: " + unpricedForNote.join(", ");
+      costSubTitle = costSubTitle ? (costSubTitle + " / " + unpricedTitle) : unpricedTitle;
+    }
+    kpiGrid.appendChild(kpiTile("API 換算額", fmtUSD(kpis.costUSD), costSub, false, costSubTitle));
 
     var cabAgent = kpis.cacheReadRateByAgent || {};
     var cacheSub = getAgentOrder()
@@ -972,7 +1023,7 @@
         el("th", { text: "プロジェクト" }),
         el("th", { text: "モデル" }),
         el("th", { text: "ctx" }),
-        el("th", { text: "費用" }),
+        el("th", { text: "API 換算" }),
         el("th", { text: "キャッシュ率" }),
         el("th", { text: "Err" }),
         el("th", { text: "圧縮" }),
@@ -1126,13 +1177,16 @@
     });
   }
 
-  /* ---------- 設定パネル(監視するエージェント) ---------- */
+  /* ---------- 設定パネル(監視するエージェント・Claude プランの月額) ---------- */
   var settingsBtn = document.getElementById("settings-btn");
   var settingsPanel = document.getElementById("settings-panel");
   var settingsListEl = document.getElementById("settings-agent-list");
   var settingsLockedNoteEl = document.getElementById("settings-locked-note");
-  var configState = null; // { agents: string[], available: [{id,label,detected}], locked: bool }
-  var configSaving = false; // POST 応答待ちの間はチェックボックスを無効化する
+  var settingsPlanSectionEl = document.getElementById("settings-plan-section");
+  var PLAN_FIELD_ID = "__claudePlanMonthlyUSD__"; // フォーカス保持の目印(agent id と重ならない値)
+  // { agents: string[], available: [{id,label,detected}], locked: bool, claudePlanMonthlyUSD: number|null }
+  var configState = null;
+  var configSaving = false; // POST 応答待ちの間、操作を止める(実際の disabled ではなく aria-disabled で)
   var configRequestSeq = 0; // 古い応答が新しい状態を巻き戻さないようにする通し番号
 
   function fetchConfig() {
@@ -1142,12 +1196,13 @@
       return res.json();
     });
   }
-  function postConfig(agents) {
-    if (IS_MOCK) return mockPostConfig(agents);
+  // partial: { agents? , claudePlanMonthlyUSD? } の部分更新
+  function postConfig(partial) {
+    if (IS_MOCK) return mockPostConfig(partial);
     return fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agents: agents })
+      body: JSON.stringify(partial)
     }).then(function (res) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
@@ -1170,15 +1225,20 @@
     if (focusable) focusable.focus();
   }
 
+  function formatPlanInputValue(v) {
+    return (v === null || v === undefined) ? "" : String(v);
+  }
+
   function renderSettingsPanel() {
-    // 再描画でチェックボックスが作り直されてもフォーカスを保てるよう、対象の agent id を覚えておく
-    var focusedAgentId = null;
+    // 再描画で入力欄が作り直されてもフォーカスを保てるよう、対象の目印を覚えておく(チェックボックスは agent id、月額欄は PLAN_FIELD_ID)
+    var focusedFieldId = null;
     var activeEl = document.activeElement;
-    if (activeEl && settingsListEl.contains(activeEl) && activeEl.dataset && activeEl.dataset.agentId) {
-      focusedAgentId = activeEl.dataset.agentId;
+    if (activeEl && settingsPanel.contains(activeEl) && activeEl.dataset && activeEl.dataset.agentId) {
+      focusedFieldId = activeEl.dataset.agentId;
     }
 
     clear(settingsListEl);
+    clear(settingsPlanSectionEl);
     if (!configState) {
       settingsListEl.appendChild(el("div", { class: "empty-state", text: "設定の取得に失敗しました" }));
       settingsLockedNoteEl.hidden = true;
@@ -1215,15 +1275,62 @@
       settingsListEl.appendChild(row);
     });
 
-    if (focusedAgentId) {
-      var checkboxes = settingsListEl.querySelectorAll('input[type="checkbox"]');
-      for (var i = 0; i < checkboxes.length; i++) {
-        if (checkboxes[i].dataset.agentId === focusedAgentId) {
-          checkboxes[i].focus();
+    // Claude プランの月額。ロックはエージェントの選択にだけ効くので、ここは保存中かどうかだけを見る
+    var planSaving = configSaving;
+    var planInput = el("input", {
+      type: "number",
+      min: "0",
+      step: "0.01",
+      inputmode: "decimal",
+      class: "settings-plan-input",
+      "aria-label": "Claude プランの月額(USD)",
+      "aria-disabled": planSaving ? "true" : null,
+      "data-agent-id": PLAN_FIELD_ID,
+      onchange: function (e) { onChangePlanMonthly(e.target.value, e.target); },
+      // Enter でも確定する。blur() は経由せず直接確定してフォーカスを保つ
+      onkeydown: function (e) { if (e.key === "Enter") { e.preventDefault(); onChangePlanMonthly(e.target.value, e.target); } }
+    });
+    planInput.value = formatPlanInputValue(configState.claudePlanMonthlyUSD);
+    var planRow = el("div", { class: "settings-plan-row" + (planSaving ? " is-saving" : "") }, [
+      el("span", { text: "$" }),
+      planInput,
+      el("span", { text: "USD / 月" })
+    ]);
+    settingsPlanSectionEl.appendChild(planRow);
+    if (configState.agents.indexOf("claude") === -1) {
+      settingsPlanSectionEl.appendChild(el("div", { class: "settings-note", text: "Claude が無効のため使われません" }));
+    }
+
+    if (focusedFieldId) {
+      var fields = settingsPanel.querySelectorAll("[data-agent-id]");
+      for (var i = 0; i < fields.length; i++) {
+        if (fields[i].dataset.agentId === focusedFieldId) {
+          fields[i].focus();
           break;
         }
       }
     }
+  }
+
+  // partial の楽観適用・POST・失敗時の巻き戻しをまとめた共通処理(チェックボックス・月額欄で共用)
+  function submitConfigChange(partial, applyOptimistic, revert) {
+    applyOptimistic();
+    configSaving = true;
+    renderSettingsPanel();
+    var seq = ++configRequestSeq;
+    postConfig(partial).then(function (data) {
+      if (seq !== configRequestSeq) return; // 後から送った要求の応答が先に来た場合はこちらを捨てる
+      configState = data;
+      configSaving = false;
+      renderSettingsPanel();
+      loadAndRender();
+    }).catch(function () {
+      if (seq !== configRequestSeq) return;
+      revert();
+      configSaving = false;
+      renderSettingsPanel();
+      showToast("設定の保存に失敗しました", "error");
+    });
   }
 
   function onToggleAgent(agentId, checked, checkboxEl) {
@@ -1244,23 +1351,45 @@
       next = next.filter(function (a) { return a !== agentId; });
     }
     var prevAgents = configState.agents;
-    configState.agents = next; // 楽観的に即時反映
-    configSaving = true;
-    renderSettingsPanel();
-    var seq = ++configRequestSeq;
-    postConfig(next).then(function (data) {
-      if (seq !== configRequestSeq) return; // 後から送った要求の応答が先に来た場合はこちらを捨てる
-      configState = data;
-      configSaving = false;
-      renderSettingsPanel();
-      loadAndRender();
-    }).catch(function () {
-      if (seq !== configRequestSeq) return;
-      configState.agents = prevAgents;
-      configSaving = false;
-      renderSettingsPanel();
-      showToast("設定の保存に失敗しました", "error");
-    });
+    submitConfigChange(
+      { agents: next },
+      function () { configState.agents = next; },
+      function () { configState.agents = prevAgents; }
+    );
+  }
+
+  function onChangePlanMonthly(rawValue, inputEl) {
+    if (!configState) return;
+    if (configSaving) {
+      // 保存中に来た変更は無視し、見た目だけ元に戻す
+      inputEl.value = formatPlanInputValue(configState.claudePlanMonthlyUSD);
+      return;
+    }
+    // "1e" "12,5" のように数値として解釈できない入力は、value が "" になり無指定と区別できない。
+    // badInput ならここで弾き、設定済みの月額が黙って消えるのを防ぐ
+    if (inputEl.validity && inputEl.validity.badInput) {
+      showToast("月額は0より大きく10000以下の数値で入力してください", "error");
+      inputEl.value = formatPlanInputValue(configState.claudePlanMonthlyUSD);
+      return;
+    }
+    var trimmed = (rawValue || "").trim();
+    var value = null;
+    if (trimmed !== "") {
+      var n = Number(trimmed);
+      if (!isFinite(n) || n <= 0 || n > 10000) {
+        showToast("月額は0より大きく10000以下の数値で入力してください", "error");
+        inputEl.value = formatPlanInputValue(configState.claudePlanMonthlyUSD);
+        return;
+      }
+      value = Math.round(n * 100) / 100;
+    }
+    if (value === configState.claudePlanMonthlyUSD) return; // 変化なし
+    var prevValue = configState.claudePlanMonthlyUSD;
+    submitConfigChange(
+      { claudePlanMonthlyUSD: value },
+      function () { configState.claudePlanMonthlyUSD = value; },
+      function () { configState.claudePlanMonthlyUSD = prevValue; }
+    );
   }
 
   function isSettingsPanelOpen() { return !settingsPanel.hidden; }
@@ -1302,7 +1431,8 @@
       { id: "agy", label: "agy", detected: true },
       { id: "codex", label: "Codex", detected: true }
     ],
-    locked: false
+    locked: false,
+    claudePlanMonthlyUSD: 100
   };
   function cloneConfigState() { return JSON.parse(JSON.stringify(mockConfigState)); }
   // 実際の通信に近づけるため、わずかに遅延させてから解決する(保存中の無効化表示も確認できるように)
@@ -1314,11 +1444,27 @@
     });
   }
   function mockGetConfig() { return mockDelay(function () { return cloneConfigState(); }); }
-  function mockPostConfig(agents) {
+  // partial: { agents? , claudePlanMonthlyUSD? } の部分更新
+  function mockPostConfig(partial) {
     return mockDelay(function () {
-      if (mockConfigState.locked) throw new Error("locked");
-      var validIds = mockConfigState.available.map(function (a) { return a.id; });
-      mockConfigState.agents = agents.filter(function (a) { return validIds.indexOf(a) !== -1; });
+      var hasAgents = Object.prototype.hasOwnProperty.call(partial, "agents");
+      var hasPlan = Object.prototype.hasOwnProperty.call(partial, "claudePlanMonthlyUSD");
+      if (!hasAgents && !hasPlan) throw new Error("400");
+      if (hasAgents) {
+        if (mockConfigState.locked) throw new Error("409"); // --agents 指定時は agents の変更だけ拒否
+        var validIds = mockConfigState.available.map(function (a) { return a.id; });
+        var nextAgents = partial.agents.filter(function (a) { return validIds.indexOf(a) !== -1; });
+        if (nextAgents.length === 0) throw new Error("400");
+        mockConfigState.agents = nextAgents;
+      }
+      if (hasPlan) {
+        var v = partial.claudePlanMonthlyUSD;
+        if (v !== null) {
+          if (typeof v !== "number" || !isFinite(v) || v <= 0 || v > 10000) throw new Error("400");
+          v = Math.round(v * 100) / 100;
+        }
+        mockConfigState.claudePlanMonthlyUSD = v;
+      }
       return cloneConfigState();
     });
   }
@@ -1495,6 +1641,15 @@
       quota[a] = enabledAgents.indexOf(a) !== -1 ? quotaFull[a] : null;
     });
 
+    var monthStart = new Date(now);
+    monthStart.setHours(0, 0, 0, 0);
+    monthStart.setDate(1);
+    var mtdClaudeCostUSD = enabledAgents.indexOf("claude") !== -1 ? 62.15 : null;
+    var mtdPlanMonthlyUSD = mockConfigState.claudePlanMonthlyUSD;
+    var mtdRatio = (mtdClaudeCostUSD !== null && mtdPlanMonthlyUSD !== null && mtdPlanMonthlyUSD > 0)
+      ? mtdClaudeCostUSD / mtdPlanMonthlyUSD
+      : null;
+
     return {
       generatedAt: now,
       range: range,
@@ -1504,7 +1659,7 @@
       kpis: {
         costUSD: 4.052,
         costByAgent: { claude: 4.052, agy: null, codex: null },
-        unpricedModels: [],
+        unpricedModels: MOCK_SHOW_UNPRICED ? ["gpt-6-codex-preview"] : [],
         tokens: { input: 320000, output: 48000, cacheRead: 5300000, cacheWrite: 210000 },
         cacheReadRate: 0.912,
         cacheReadRateByAgent: { claude: 0.948, agy: 0.712, codex: 0.68 },
@@ -1516,6 +1671,13 @@
         ],
         compactions: 2, droppedTokens: 45000,
         autoContinues: 6,
+        monthToDate: {
+          since: monthStart.getTime(),
+          claudeCostUSD: mtdClaudeCostUSD,
+          planMonthlyUSD: mtdPlanMonthlyUSD,
+          ratio: mtdRatio,
+          unpricedModels: MOCK_SHOW_UNPRICED ? ["gpt-6-codex-preview"] : []
+        },
         tasks: { open: 3, inProgress: 1, blocked: 1, completed: 2 },
         questions: filteredQuestions.length,
         sessions: {

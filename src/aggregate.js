@@ -1,5 +1,5 @@
 import { AGENT_DEFS, AGENT_IDS, agentDef } from './agents.js';
-import { enabledAgents } from './config.js';
+import { enabledAgents, planMonthlyUSD } from './config.js';
 import { orcaTerminals } from './proc.js';
 
 export const RANGES = ['today', '24h', '7d', '30d', 'all'];
@@ -13,6 +13,14 @@ const TERMINAL_TTL_MS = 10_000;
 let terminalCache = { at: 0, list: [] };
 // 直近の収集結果(agent:id → セッション)。/api/jump の解決に使う
 let lastSessions = new Map();
+
+// ローカル時刻の当月 1 日 0 時
+export function monthStartOf(now = Date.now()) {
+  const d = new Date(now);
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
 
 export function sinceOf(range, now = Date.now()) {
   switch (range) {
@@ -96,11 +104,13 @@ function rate(num, den) {
   return den > 0 ? num / den : null;
 }
 
-// 有効なエージェントのコレクタだけを並列に呼ぶ。1 つが失敗しても他は出す
-async function collectAll(since, enabled) {
+// 有効なエージェントのコレクタだけを並列に呼ぶ。1 つが失敗しても他は出す。
+// sinceFor はエージェントごとの読み込み範囲(数値なら全員共通)
+async function collectAll(sinceFor, enabled) {
   const errors = [];
   const defs = AGENT_DEFS.filter((d) => enabled.includes(d.id));
-  const results = await Promise.allSettled(defs.map((d) => d.collect({ since })));
+  const sinceOfAgent = typeof sinceFor === 'function' ? sinceFor : () => sinceFor;
+  const results = await Promise.allSettled(defs.map((d) => d.collect({ since: sinceOfAgent(d.id) })));
   const quota = Object.fromEntries(AGENT_IDS.map((id) => [id, null]));
   const all = [];
   defs.forEach((d, i) => {
@@ -123,8 +133,31 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
   if (agent !== 'all' && !enabled.includes(agent)) agent = 'all';
   const now = Date.now();
   const since = sinceOf(range, now);
+  const monthStart = monthStartOf(now);
 
-  const { all, quota, errors } = await collectAll(since, enabled);
+  // 当月の換算額を出すため、Claude は当月 1 日以降も読む(セッション一覧や KPI は range の since で絞る)
+  const { all, quota, errors } = await collectAll(
+    (id) => (id === 'claude' ? Math.min(since, monthStart) : since),
+    enabled,
+  );
+
+  // 当月 1 日以降の Claude の換算額。表示中の range や agent の絞り込み、セッションの抽出条件には関係なく、
+  // Claude の全セッション(サブエージェントは所有者方式で重複なし)の usage から数える
+  // 単価の分からないモデル(costUSD が null)は合計に入れず、モデル名を別に返す
+  let monthCost = null;
+  const monthUnpriced = new Set();
+  if (enabled.includes('claude')) {
+    monthCost = 0;
+    for (const s of all) {
+      if (s.agent !== 'claude') continue;
+      for (const u of s.events.usage) {
+        if ((u.ts ?? 0) < monthStart) continue;
+        if (u.costUSD != null) monthCost += u.costUSD;
+        else if (u.model) monthUnpriced.add(u.model);
+      }
+    }
+  }
+  const plan = planMonthlyUSD();
   const list = await terminals();
 
   const picked = all.filter(
@@ -304,6 +337,13 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
     kpis: {
       costUSD: totalCost,
       costByAgent,
+      monthToDate: {
+        since: monthStart,
+        claudeCostUSD: monthCost,
+        planMonthlyUSD: plan,
+        ratio: monthCost != null && plan != null ? monthCost / plan : null,
+        unpricedModels: [...monthUnpriced].sort(),
+      },
       unpricedModels: [...unpriced].sort(),
       tokens,
       cacheReadRate: rate(tokens.cacheRead, tokens.input + tokens.cacheRead + tokens.cacheWrite),
