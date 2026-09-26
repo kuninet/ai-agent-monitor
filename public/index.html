@@ -309,8 +309,11 @@
   /* KPI */
   .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 10px;
+  }
+  @media (min-width: 900px) {
+    .kpi-grid { grid-template-columns: repeat(4, 1fr); }
   }
   .kpi-tile {
     background: var(--card-bg);
@@ -466,7 +469,7 @@
   }
   .subagent-grid {
     display: grid;
-    grid-template-columns: 14px 76px 120px 90px 90px minmax(140px, 220px) 130px 60px 96px;
+    grid-template-columns: 14px 76px 120px 90px 90px minmax(140px, 220px) 130px 70px 60px 96px;
     align-items: center;
     gap: 6px;
     font-size: 11px;
@@ -759,6 +762,29 @@
     var d = new Date(ts);
     return pad2(d.getMonth() + 1) + "/" + pad2(d.getDate());
   }
+  // 開始時刻。今日なら HH:MM、それ以外は MM/DD
+  function fmtStartedAt(ts) {
+    if (ts === null || ts === undefined) return "—";
+    var d = new Date(ts);
+    var now = new Date();
+    var isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return isToday ? (pad2(d.getHours()) + ":" + pad2(d.getMinutes())) : (pad2(d.getMonth() + 1) + "/" + pad2(d.getDate()));
+  }
+  function fmtStartedAtTitle(ts) {
+    if (ts === null || ts === undefined) return null;
+    var d = new Date(ts);
+    return d.getFullYear() + "/" + pad2(d.getMonth() + 1) + "/" + pad2(d.getDate()) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+  // 作業時間。「42分」「1時間12分」のように表す。1分未満は「1分未満」
+  function fmtWorkMs(ms) {
+    if (ms === null || ms === undefined) return "—";
+    if (ms < 60 * 1000) return "1分未満";
+    var totalMin = Math.floor(ms / 60000);
+    var h = Math.floor(totalMin / 60);
+    var m = totalMin % 60;
+    if (h > 0) return h + "時間" + (m > 0 ? m + "分" : "");
+    return m + "分";
+  }
   function barClass(pct) {
     if (pct === null || pct === undefined) return null;
     if (pct >= 90) return "bar-critical";
@@ -953,6 +979,20 @@
       "人間以外のターン開始"
     ));
 
+    var work = kpis.work || null;
+    var workByAgent = (work && work.byAgent) || {};
+    var workSub = getAgentOrder()
+      .filter(function (a) { return enabledAgents.indexOf(a) !== -1; })
+      .map(function (a) { return getAgentLabel(a) + " " + fmtWorkMs(workByAgent[a]); })
+      .join(" / ");
+    kpiGrid.appendChild(kpiTile(
+      "作業時間",
+      fmtWorkMs(work ? work.totalMs : null),
+      workSub,
+      false,
+      "エージェントが作業していた時間の合計。人の入力待ちや放置の時間は含みません"
+    ));
+
     var tasks = kpis.tasks || {};
     kpiGrid.appendChild(kpiTile(
       "タスク(未完)",
@@ -1039,7 +1079,7 @@
 
   /* ---------- セッション ---------- */
   var sessionsBody = document.getElementById("sessions-body");
-  var SESSION_COLUMN_COUNT = 13;
+  var SESSION_COLUMN_COUNT = 15;
   var STATUS_INFO = {
     running: { symbol: "●", text: "実行中", cls: "st-running" },
     question: { symbol: "?", text: "質問待ち", cls: "st-question" },
@@ -1145,6 +1185,7 @@
       el("span", { class: "subagent-ellipsis", text: sub.model || "—" }),
       el("span", { class: "subagent-ellipsis", title: sub.description || "", text: sub.description || "—" }),
       el("span", { class: "subagent-ellipsis", text: lastToolText }),
+      el("span", { text: fmtWorkMs(sub.workMs) }),
       el("span", { text: fmtUSD(sub.costUSD) }),
       el("span", { text: (sub.toolCalls || 0) + "件・Err " + (sub.toolErrors || 0) })
     ]);
@@ -1220,6 +1261,8 @@
         el("th", { text: "プロジェクト" }),
         el("th", { text: "モデル" }),
         el("th", { text: "ctx" }),
+        el("th", { text: "開始" }),
+        el("th", { text: "作業時間" }),
         el("th", { text: "API 換算" }),
         el("th", { text: "キャッシュ率" }),
         el("th", { text: "Err" }),
@@ -1265,6 +1308,8 @@
         el("td", { class: "wrap", title: s.cwd || "", text: (s.project || "") + (s.branch ? " (" + s.branch + ")" : "") }),
         el("td", { text: s.model || "—" }),
         el("td", null, [ctxCell(s.context)]),
+        el("td", { title: fmtStartedAtTitle(s.startedAt), text: fmtStartedAt(s.startedAt) }),
+        el("td", { text: fmtWorkMs(s.workMs) }),
         el("td", { text: fmtUSD(s.costUSD) }),
         el("td", { text: fmtFraction(s.cacheReadRate) }),
         el("td", { text: (s.toolErrors || 0) + "/" + (s.toolCalls || 0) }),
@@ -1776,7 +1821,7 @@
         status: "running", live: true, updatedAt: now - 20 * 1000, startedAt: now - 2 * HOUR,
         costUSD: 0.842, cacheReadRate: 0.948, toolCalls: 132, toolErrors: 2, compactions: 0, autoContinues: 1,
         context: { usedTokens: 84000, windowTokens: 200000, pct: 42.0 },
-        openTasks: 3, questions: 0, canJump: true,
+        openTasks: 3, questions: 0, canJump: true, workMs: 90 * MIN,
         subagentSummary: { total: 2, running: 1 },
         subagents: [
           {
@@ -1785,7 +1830,7 @@
             isFork: true, isTeammate: false, status: "running",
             startedAt: now - 5 * MIN, updatedAt: now - 10 * 1000,
             lastTool: { name: "Bash", ts: now - 10 * 1000 },
-            costUSD: 0.05, toolCalls: 4, toolErrors: 1
+            costUSD: 0.05, toolCalls: 4, toolErrors: 1, workMs: 4 * MIN
           },
           {
             id: "sub-teammate-1", name: "reviewer", type: "general-purpose", model: "claude-sonnet-5",
@@ -1793,7 +1838,7 @@
             isFork: false, isTeammate: true, status: "idle",
             startedAt: now - 30 * MIN, updatedAt: now - 2 * MIN,
             lastTool: { name: "Read", ts: now - 3 * MIN },
-            costUSD: 0.12, toolCalls: 8, toolErrors: 0
+            costUSD: 0.12, toolCalls: 8, toolErrors: 0, workMs: 15 * MIN
           }
         ]
       },
@@ -1803,7 +1848,7 @@
         status: "question", live: true, updatedAt: now - 6 * MIN, startedAt: now - 5 * HOUR,
         costUSD: 3.21, cacheReadRate: 0.71, toolCalls: 58, toolErrors: 5, compactions: 1, autoContinues: 0,
         context: { usedTokens: 178000, windowTokens: 200000, pct: 89.0 },
-        openTasks: 1, questions: 1, canJump: false,
+        openTasks: 1, questions: 1, canJump: false, workMs: 75 * MIN,
         subagentSummary: { total: 0, running: 0 }, subagents: []
       },
       {
@@ -1812,7 +1857,7 @@
         status: "waiting", live: true, updatedAt: now - 40 * MIN, startedAt: now - 1 * DAY,
         costUSD: null, cacheReadRate: 0.62, toolCalls: 21, toolErrors: 0, compactions: 0, autoContinues: 2,
         context: { usedTokens: 30000, windowTokens: 1000000, pct: 3.0 },
-        openTasks: 2, questions: 0, canJump: true,
+        openTasks: 2, questions: 0, canJump: true, workMs: 60 * MIN,
         subagentSummary: { total: 2, running: 1 },
         subagents: [
           {
@@ -1821,7 +1866,7 @@
             isFork: false, isTeammate: false, status: "running",
             startedAt: now - 20 * MIN, updatedAt: now - 1 * MIN,
             lastTool: { name: "grep", ts: now - 1 * MIN },
-            costUSD: null, toolCalls: 15, toolErrors: 0
+            costUSD: null, toolCalls: 15, toolErrors: 0, workMs: 10 * MIN
           },
           {
             id: "agy-child-2", name: "sub-agent-b", type: "test-writer", model: null,
@@ -1829,7 +1874,7 @@
             isFork: false, isTeammate: false, status: "done",
             startedAt: now - 25 * MIN, updatedAt: now - 15 * MIN,
             lastTool: { name: "write_file", ts: now - 15 * MIN },
-            costUSD: null, toolCalls: 6, toolErrors: 0
+            costUSD: null, toolCalls: 6, toolErrors: 0, workMs: 8 * MIN
           }
         ]
       },
@@ -1839,7 +1884,7 @@
         status: "question", live: true, updatedAt: now - 2 * MIN, startedAt: now - 3 * HOUR,
         costUSD: null, cacheReadRate: 0.55, toolCalls: 12, toolErrors: 1, compactions: 0, autoContinues: 0,
         context: { usedTokens: 12000, windowTokens: 1000000, pct: 1.2 },
-        openTasks: 0, questions: 1, canJump: true,
+        openTasks: 0, questions: 1, canJump: true, workMs: 15 * MIN,
         subagentSummary: { total: 0, running: 0 }, subagents: []
       },
       {
@@ -1848,7 +1893,7 @@
         status: "ended", live: false, updatedAt: now - 3 * DAY, startedAt: now - 3 * DAY - 2 * HOUR,
         costUSD: 0.15, cacheReadRate: 0.80, toolCalls: 9, toolErrors: 0, compactions: 0, autoContinues: 0,
         context: { usedTokens: 5000, windowTokens: 200000, pct: 2.5 },
-        openTasks: 0, questions: 0, canJump: false,
+        openTasks: 0, questions: 0, canJump: false, workMs: 45 * 1000,
         subagentSummary: { total: 0, running: 0 }, subagents: []
       },
       {
@@ -1857,7 +1902,7 @@
         status: "running", live: true, updatedAt: now - 45 * 1000, startedAt: now - 90 * MIN,
         costUSD: null, cacheReadRate: 0.68, toolCalls: 27, toolErrors: 1, compactions: 0, autoContinues: 1,
         context: { usedTokens: 62000, windowTokens: 272000, pct: 22.8 },
-        openTasks: 1, questions: 1, canJump: true,
+        openTasks: 1, questions: 1, canJump: true, workMs: 50 * MIN,
         subagentSummary: { total: 1, running: 1 },
         subagents: [
           {
@@ -1866,7 +1911,7 @@
             isFork: false, isTeammate: false, status: "running",
             startedAt: now - 20 * MIN, updatedAt: now - 30 * 1000,
             lastTool: { name: "apply_patch", ts: now - 30 * 1000 },
-            costUSD: null, toolCalls: 9, toolErrors: 0
+            costUSD: null, toolCalls: 9, toolErrors: 0, workMs: 12 * MIN
           }
         ]
       }
@@ -1954,6 +1999,16 @@
       ? mtdClaudeCostUSD / mtdPlanMonthlyUSD
       : null;
 
+    // 作業時間は、表示中(絞り込み後)のセッションの workMs を合計する。無効なエージェントは null
+    var workByAgent = {};
+    AGENT_ORDER_FALLBACK.forEach(function (a) {
+      if (enabledAgents.indexOf(a) === -1) { workByAgent[a] = null; return; }
+      var sum = 0;
+      visibleSessions.forEach(function (s) { if (s.agent === a && typeof s.workMs === "number") sum += s.workMs; });
+      workByAgent[a] = sum;
+    });
+    var workTotalMs = AGENT_ORDER_FALLBACK.reduce(function (acc, a) { return acc + (workByAgent[a] || 0); }, 0);
+
     return {
       generatedAt: now,
       range: range,
@@ -1975,6 +2030,7 @@
         ],
         compactions: 2, droppedTokens: 45000,
         autoContinues: 6,
+        work: { totalMs: workTotalMs, byAgent: workByAgent },
         monthToDate: {
           since: monthStart.getTime(),
           claudeCostUSD: mtdClaudeCostUSD,
