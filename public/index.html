@@ -14,6 +14,7 @@
     --header-bg: #ffffff;
     --bar-track: #e5e5ea;
     --subagent-bg: #f0eff4;
+    --selected-bg: #dbe9fb;
     --accent-claude: #d97757;
     --accent-agy: #4285f4;
     --accent-codex: #7c5cff;
@@ -33,6 +34,7 @@
       --header-bg: #262628;
       --bar-track: #3a3a3d;
       --subagent-bg: #211f26;
+      --selected-bg: #1d2b40;
       --accent-claude: #e3906c;
       --accent-agy: #6ba0f7;
       --accent-codex: #a78bfa;
@@ -50,6 +52,9 @@
     max-width: 100%;
     overflow-x: hidden;
   }
+  /* ページ全体がスクロールするとき(狭い/低い画面)、固定ヘッダーの下に
+     フォーカスした要素が隠れないようにする */
+  html { scroll-padding-top: 100px; }
   body {
     background: var(--bg);
     color: var(--fg);
@@ -67,6 +72,34 @@
     background: var(--header-bg);
     border-bottom: 1px solid var(--border);
     padding: 10px 16px;
+  }
+  .fixed-top-quota {
+    padding: 16px 16px 0;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* 幅 900px 以上・高さ 700px 以上のときだけ、ヘッダーとサブスク枠を上に固定し、
+     その下(KPI 以降)だけをスクロールさせる。それより小さい画面は従来どおりページ全体がスクロールする */
+  @media screen and (min-width: 900px) and (min-height: 700px) {
+    html { scroll-padding-top: 0; }
+    body {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #fixed-top {
+      flex: 0 0 auto;
+      position: relative;
+      z-index: 15;
+      box-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.18);
+    }
+    #scroll-area {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      scroll-padding-top: 12px;
+    }
   }
   .header-row {
     display: flex;
@@ -321,6 +354,74 @@
   tbody tr:last-child td { border-bottom: none; }
   tbody tr.row-dim { opacity: 0.55; }
 
+  /* セッション行の選択(タスク表・質問表をそのセッションに絞り込む) */
+  tbody tr.session-row { cursor: pointer; }
+  tbody tr.session-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+  tbody tr.session-row-selected td { background: var(--selected-bg); }
+
+  /* 視覚的には隠すが、スクリーンリーダーには読ませるテキスト */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .filter-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--selected-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .filter-banner-clear {
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .filter-banner-clear:hover { border-color: var(--muted); }
+  .filter-banner-clear:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+  /* タスク表のセッション見出し行 */
+  tr.task-group-header td {
+    background: var(--subagent-bg);
+    font-weight: 700;
+    padding: 6px 8px;
+  }
+  .task-group-header-row { display: flex; align-items: center; gap: 8px; }
+  .task-group-toggle {
+    border: none;
+    background: none;
+    color: var(--fg);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0;
+    line-height: 1;
+  }
+  .task-group-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .task-group-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+  }
+  .task-group-count { color: var(--muted); font-weight: 400; font-size: 11px; white-space: nowrap; }
+
   .status-cell { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .status-dot { font-weight: 700; }
   .status-dot.st-running { color: var(--status-good); }
@@ -446,63 +547,69 @@
 </style>
 </head>
 <body>
-  <header>
-    <div class="header-row">
-      <h1 class="app-title">AI Agent Monitor</h1>
-      <div class="btn-group" id="range-group" role="group" aria-label="期間"></div>
-      <div class="btn-group" id="agent-group" role="group" aria-label="エージェント"></div>
-      <div class="header-status">
-        <span id="fetch-errors" class="fetch-errors" hidden></span>
-        <span id="conn-error" class="conn-error" hidden>接続エラー</span>
-        <span id="last-updated">最終更新: --:--:--</span>
+  <div id="fixed-top">
+    <header>
+      <div class="header-row">
+        <h1 class="app-title">AI Agent Monitor</h1>
+        <div class="btn-group" id="range-group" role="group" aria-label="期間"></div>
+        <div class="btn-group" id="agent-group" role="group" aria-label="エージェント"></div>
+        <div class="header-status">
+          <span id="fetch-errors" class="fetch-errors" hidden></span>
+          <span id="conn-error" class="conn-error" hidden>接続エラー</span>
+          <span id="last-updated">最終更新: --:--:--</span>
+        </div>
+        <button type="button" id="settings-btn" class="settings-btn" aria-label="設定" aria-haspopup="dialog" aria-expanded="false">⚙</button>
+        <div id="settings-panel" class="settings-panel" hidden role="dialog" aria-label="設定">
+          <div class="settings-panel-title">監視するエージェント</div>
+          <div id="settings-agent-list"></div>
+          <div id="settings-locked-note" class="settings-locked-note" hidden>起動オプション --agents で指定されています</div>
+          <div class="settings-panel-title settings-plan-title">Claude プランの月額</div>
+          <div id="settings-plan-section"></div>
+        </div>
       </div>
-      <button type="button" id="settings-btn" class="settings-btn" aria-label="設定" aria-haspopup="dialog" aria-expanded="false">⚙</button>
-      <div id="settings-panel" class="settings-panel" hidden role="dialog" aria-label="設定">
-        <div class="settings-panel-title">監視するエージェント</div>
-        <div id="settings-agent-list"></div>
-        <div id="settings-locked-note" class="settings-locked-note" hidden>起動オプション --agents で指定されています</div>
-        <div class="settings-panel-title settings-plan-title">Claude プランの月額</div>
-        <div id="settings-plan-section"></div>
-      </div>
-    </div>
-  </header>
+    </header>
 
-  <main>
-    <section id="quota-section">
+    <section id="quota-section" class="fixed-top-quota">
       <h2>サブスク枠</h2>
       <div class="quota-grid" id="quota-grid"></div>
     </section>
+  </div>
 
-    <section id="kpi-section">
-      <h2>KPI</h2>
-      <div class="kpi-grid" id="kpi-grid"></div>
-    </section>
+  <div id="scroll-area">
+    <main>
+      <section id="kpi-section">
+        <h2>KPI</h2>
+        <div class="kpi-grid" id="kpi-grid"></div>
+      </section>
 
-    <section id="questions-section">
-      <h2>未回答の質問</h2>
-      <div id="questions-body"></div>
-    </section>
+      <section id="questions-section">
+        <h2>未回答の質問</h2>
+        <div id="questions-filter-banner"></div>
+        <div id="questions-body"></div>
+      </section>
 
-    <section id="sessions-section">
-      <h2>セッション</h2>
-      <div id="sessions-body"></div>
-    </section>
+      <section id="sessions-section">
+        <h2>セッション</h2>
+        <div id="sessions-body"></div>
+      </section>
 
-    <section id="tasks-section">
-      <h2>タスク</h2>
-      <div class="task-controls">
-        <label class="checkbox-label">
-          <input type="checkbox" id="show-ended-sessions">
-          終了セッションも表示
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="show-completed">
-          完了も表示
-        </label>
-      </div>
-      <div id="tasks-body"></div>
-    </section>
-  </main>
+      <section id="tasks-section">
+        <h2>タスク</h2>
+        <div id="tasks-filter-banner"></div>
+        <div class="task-controls">
+          <label class="checkbox-label">
+            <input type="checkbox" id="show-ended-sessions">
+            終了セッションも表示
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="show-completed">
+            完了も表示
+          </label>
+        </div>
+        <div id="tasks-body"></div>
+      </section>
+    </main>
+  </div>
 
   <div id="toast-container" aria-live="polite"></div>
 
@@ -876,7 +983,13 @@
   }
   function renderQuestions(questions) {
     clear(questionsBody);
+    renderFilterBanner(questionsFilterBannerEl, "質問");
     questions = questions || [];
+    if (selectedSession) {
+      questions = questions.filter(function (q) {
+        return q.agent === selectedSession.agent && q.sessionId === selectedSession.id;
+      });
+    }
     if (questions.length === 0) {
       questionsBody.appendChild(el("div", { class: "empty-state", text: "未回答の質問はありません" }));
       return;
@@ -947,6 +1060,54 @@
     });
   }
 
+  /* ---------- セッション行の選択(タスク表・質問表の絞り込み) ---------- */
+  // { agent, id, title } | null。メモリのみで保持し、ポーリングをまたいで維持する
+  var selectedSession = null;
+  var questionsFilterBannerEl = document.getElementById("questions-filter-banner");
+  var tasksFilterBannerEl = document.getElementById("tasks-filter-banner");
+  function isSessionSelected(s) {
+    return !!selectedSession && selectedSession.agent === s.agent && selectedSession.id === s.id;
+  }
+  function toggleSessionSelection(s) {
+    selectedSession = isSessionSelected(s) ? null : { agent: s.agent, id: s.id, title: s.title || s.id };
+    if (lastData) {
+      renderSessions(lastData.sessions);
+      renderTasks(lastData.tasks);
+      renderQuestions(lastData.questions);
+    }
+  }
+  function clearSessionSelection() {
+    if (!selectedSession) return;
+    var clearedKey = selectedSession.agent + ":" + selectedSession.id;
+    selectedSession = null;
+    if (lastData) {
+      renderSessions(lastData.sessions);
+      renderTasks(lastData.tasks);
+      renderQuestions(lastData.questions);
+    }
+    // 解除ボタン自体は再描画で無くなるので、絞り込んでいたセッションの行へフォーカスを戻す
+    var rows = sessionsBody.querySelectorAll("[data-session-key]");
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.sessionKey === clearedKey) {
+        rows[i].focus();
+        break;
+      }
+    }
+  }
+  function renderFilterBanner(container, label) {
+    clear(container);
+    if (!selectedSession) return;
+    container.appendChild(el("div", { class: "filter-banner" }, [
+      el("span", { text: "「" + selectedSession.title + "」の" + label + "だけを表示中" }),
+      el("button", {
+        type: "button",
+        class: "filter-banner-clear",
+        text: "解除",
+        onclick: function () { clearSessionSelection(); }
+      })
+    ]));
+  }
+
   /* ---------- サブエージェント ---------- */
   // 開閉状態はメモリのみで保持(ポーリングをまたいで維持、リロードでは既定に戻る)
   var subagentOpenState = {};
@@ -1006,7 +1167,9 @@
         type: "button",
         text: open ? "▾" : "▸",
         "aria-label": open ? "サブエージェントを折りたたむ" : "サブエージェントを展開",
-        onclick: function () {
+        "data-sa-toggle-key": sessionKey(session),
+        onclick: function (e) {
+          e.stopPropagation(); // 行のクリック(セッション絞り込み)には使わない
           subagentOpenState[sessionKey(session)] = !isSubagentsOpen(session);
           if (lastData) renderSessions(lastData.sessions);
         }
@@ -1031,6 +1194,15 @@
     return wrap;
   }
   function renderSessions(sessions) {
+    // 再描画で行やボタンが作り直されてもキーボードでのフォーカスを保てるよう、対象を覚えておく
+    var focusedSessionKey = null;
+    var focusedSaToggleKey = null;
+    var activeEl = document.activeElement;
+    if (activeEl && sessionsBody.contains(activeEl) && activeEl.dataset) {
+      if (activeEl.dataset.sessionKey) focusedSessionKey = activeEl.dataset.sessionKey;
+      else if (activeEl.dataset.saToggleKey) focusedSaToggleKey = activeEl.dataset.saToggleKey;
+    }
+
     clear(sessionsBody);
     sessions = sessions || [];
     if (sessions.length === 0) {
@@ -1065,11 +1237,28 @@
           type: "button",
           text: "↗",
           "aria-label": "ジャンプ",
-          onclick: function () { jumpTo(s.agent, s.id); }
+          onclick: function (e) {
+            e.stopPropagation(); // 行のクリック(セッション絞り込み)には使わない
+            jumpTo(s.agent, s.id);
+          }
         }));
       }
-      tbody.appendChild(el("tr", null, [
-        el("td", null, [statusCell(s.status)]),
+      var selected = isSessionSelected(s);
+      tbody.appendChild(el("tr", {
+        tabindex: "0",
+        "aria-current": selected ? "true" : null,
+        class: "session-row" + (selected ? " session-row-selected" : ""),
+        "data-session-key": sessionKey(s),
+        onclick: function () { toggleSessionSelection(s); },
+        onkeydown: function (e) {
+          if (e.target !== e.currentTarget) return; // 行内のボタン(↗・SA開閉)の Enter/Space は奪わない
+          if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+            e.preventDefault();
+            toggleSessionSelection(s);
+          }
+        }
+      }, [
+        el("td", null, [statusCell(s.status), selected ? el("span", { class: "visually-hidden", text: "選択中" }) : null]),
         el("td", null, [badge(s.agent)]),
         saCell(s),
         el("td", { class: "wrap", text: s.title || s.id }),
@@ -1093,6 +1282,24 @@
     table.appendChild(tbody);
     scroll.appendChild(table);
     sessionsBody.appendChild(scroll);
+
+    if (focusedSessionKey) {
+      var rows = sessionsBody.querySelectorAll("[data-session-key]");
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].dataset.sessionKey === focusedSessionKey) {
+          rows[i].focus();
+          break;
+        }
+      }
+    } else if (focusedSaToggleKey) {
+      var saToggles = sessionsBody.querySelectorAll("[data-sa-toggle-key]");
+      for (var j = 0; j < saToggles.length; j++) {
+        if (saToggles[j].dataset.saToggleKey === focusedSaToggleKey) {
+          saToggles[j].focus();
+          break;
+        }
+      }
+    }
   }
 
   /* ---------- タスク ---------- */
@@ -1102,24 +1309,50 @@
     in_progress: { symbol: "▶", text: "進行中" },
     completed: { symbol: "✔", text: "完了" }
   };
+  var TASK_COLUMN_COUNT = 4; // ID / 状態 / タイトル / Blocker(エージェント・セッションは見出し行にまとめる)
+  // タスク表のセッション見出しの開閉状態。メモリのみで保持し、ポーリングをまたいで維持する。既定は開く
+  var taskGroupOpenState = {};
+  function taskGroupKey(t) { return t.agent + ":" + t.sessionId; }
+  function isTaskGroupOpen(key) {
+    return Object.prototype.hasOwnProperty.call(taskGroupOpenState, key) ? taskGroupOpenState[key] : true;
+  }
   function renderTasks(tasks) {
+    // 再描画で見出しの開閉ボタンが作り直されてもフォーカスを保てるよう、対象を覚えておく
+    var focusedGroupKey = null;
+    var activeElForTasks = document.activeElement;
+    if (activeElForTasks && tasksBody.contains(activeElForTasks) && activeElForTasks.dataset && activeElForTasks.dataset.groupKey) {
+      focusedGroupKey = activeElForTasks.dataset.groupKey;
+    }
+
     clear(tasksBody);
+    renderFilterBanner(tasksFilterBannerEl, "タスク");
     tasks = tasks || [];
     var visible = tasks.filter(function (t) {
       if (!state.showCompleted && t.status === "completed") return false;
       if (!state.showEndedSessions && t.sessionStatus === "ended") return false;
+      if (selectedSession && !(t.agent === selectedSession.agent && t.sessionId === selectedSession.id)) return false;
       return true;
     });
     if (visible.length === 0) {
       tasksBody.appendChild(el("div", { class: "empty-state", text: "表示対象のタスクはありません" }));
       return;
     }
+    // セッション(エージェント+sessionId)ごとにまとめる。出現順を保つ
+    var groups = [];
+    var groupIndexByKey = {};
+    visible.forEach(function (t) {
+      var key = taskGroupKey(t);
+      if (!Object.prototype.hasOwnProperty.call(groupIndexByKey, key)) {
+        groupIndexByKey[key] = groups.length;
+        groups.push({ key: key, agent: t.agent, sessionId: t.sessionId, sessionTitle: t.sessionTitle, project: t.project, items: [] });
+      }
+      groups[groupIndexByKey[key]].items.push(t);
+    });
+
     var scroll = el("div", { class: "table-scroll" });
     var table = el("table");
     table.appendChild(el("thead", null, [
       el("tr", null, [
-        el("th", { text: "エージェント" }),
-        el("th", { text: "セッション" }),
         el("th", { text: "ID" }),
         el("th", { text: "状態" }),
         el("th", { text: "タイトル" }),
@@ -1127,27 +1360,61 @@
       ])
     ]));
     var tbody = el("tbody");
-    visible.forEach(function (t) {
-      var info = TASK_STATUS_INFO[t.status] || { symbol: "?", text: t.status };
-      var statusSpan = el("span", { class: "status-cell" }, [
-        el("span", { class: "status-dot", text: info.symbol }),
-        el("span", { class: "status-text", text: info.text })
-      ]);
-      var blockerText = (t.blockedBy && t.blockedBy.length)
-        ? t.blockedBy.map(function (id) { return "#" + id; }).join(", ")
-        : "—";
-      tbody.appendChild(el("tr", { class: t.sessionStatus === "ended" ? "row-dim" : null }, [
-        el("td", null, [badge(t.agent)]),
-        el("td", { class: "wrap", title: t.project || "", text: t.sessionTitle || t.sessionId }),
-        el("td", { text: "#" + t.id }),
-        el("td", null, [statusSpan]),
-        el("td", { class: "wrap", text: t.title }),
-        el("td", { text: blockerText })
+    groups.forEach(function (g) {
+      var openCount = g.items.filter(function (t) { return t.status !== "completed"; }).length;
+      var open = isTaskGroupOpen(g.key);
+      var toggleBtn = el("button", {
+        class: "task-group-toggle",
+        type: "button",
+        text: open ? "▾" : "▸",
+        "aria-label": open ? "折りたたむ" : "展開",
+        "data-group-key": g.key,
+        onclick: function () {
+          taskGroupOpenState[g.key] = !isTaskGroupOpen(g.key);
+          if (lastData) renderTasks(lastData.tasks);
+        }
+      });
+      tbody.appendChild(el("tr", { class: "task-group-header" }, [
+        el("td", { colspan: String(TASK_COLUMN_COUNT) }, [
+          el("div", { class: "task-group-header-row" }, [
+            toggleBtn,
+            badge(g.agent),
+            el("span", { class: "task-group-title", title: g.project || "", text: g.sessionTitle || g.sessionId }),
+            el("span", { class: "task-group-count", text: openCount + "件未完" })
+          ])
+        ])
       ]));
+      if (!open) return;
+      g.items.forEach(function (t) {
+        var info = TASK_STATUS_INFO[t.status] || { symbol: "?", text: t.status };
+        var statusSpan = el("span", { class: "status-cell" }, [
+          el("span", { class: "status-dot", text: info.symbol }),
+          el("span", { class: "status-text", text: info.text })
+        ]);
+        var blockerText = (t.blockedBy && t.blockedBy.length)
+          ? t.blockedBy.map(function (id) { return "#" + id; }).join(", ")
+          : "—";
+        tbody.appendChild(el("tr", { class: t.sessionStatus === "ended" ? "row-dim" : null }, [
+          el("td", { text: "#" + t.id }),
+          el("td", null, [statusSpan]),
+          el("td", { class: "wrap", text: t.title }),
+          el("td", { text: blockerText })
+        ]));
+      });
     });
     table.appendChild(tbody);
     scroll.appendChild(table);
     tasksBody.appendChild(scroll);
+
+    if (focusedGroupKey) {
+      var toggles = tasksBody.querySelectorAll("[data-group-key]");
+      for (var i = 0; i < toggles.length; i++) {
+        if (toggles[i].dataset.groupKey === focusedGroupKey) {
+          toggles[i].focus();
+          break;
+        }
+      }
+    }
   }
 
   var showCompletedCheckbox = document.getElementById("show-completed");
@@ -1750,6 +2017,18 @@
     if (state.agent !== "all" && enabledAgents.indexOf(state.agent) === -1) {
       state.agent = "all";
       setStored("agent", "all");
+    }
+    // 絞り込み中のセッションが一覧から消えていたら解除する。残っていればタイトルを最新に保つ
+    if (selectedSession) {
+      var stillThere = null;
+      (data.sessions || []).forEach(function (s) {
+        if (s.agent === selectedSession.agent && s.id === selectedSession.id) stillThere = s;
+      });
+      if (!stillThere) {
+        selectedSession = null;
+      } else {
+        selectedSession.title = stillThere.title || stillThere.id;
+      }
     }
     renderToggles(enabledAgents);
     renderQuota(data.quota, enabledAgents);
