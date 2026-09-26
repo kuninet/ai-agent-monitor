@@ -16,9 +16,17 @@ API キーやネットワーク接続は使いません。手元に残るログ�
 ## 必要なもの
 
 - Node.js 22.13 以上(24 で動作確認)
-- macOS(プロセス情報の取得に `ps` を使っています)
-- Windows(ネイティブ。プロセス情報の取得に PowerShell の `Get-CimInstance` を使っています。どちらも Windows 標準です)
+- macOS または Linux(WSL2 を含む)
+  - プロセス情報の取得に `ps` を使っています。Linux では procps(procps-ng)版の `ps` が必要です(Ubuntu や Debian などは標準)
+- Windows(ネイティブ)
+  - プロセス情報の取得に PowerShell の `Get-CimInstance` を使っています。どちらも Windows 標準です
 - 依存パッケージはありません
+
+WSL2 で使うときは次の点に注意してください。
+
+- WSL 側で動かしているエージェントのログだけを集計します。Windows ネイティブで動かしているエージェントのログは読みません
+- 画面は Windows 側のブラウザから `http://127.0.0.1:4777/` で開けます(WSL2 の localhost 転送が有効な場合)
+- WSL のターミナルをすべて閉じると、しばらくして WSL ごとダッシュボードも止まります
 
 Windows(ネイティブ)で使うときは次の点に注意してください。
 
