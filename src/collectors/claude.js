@@ -369,9 +369,14 @@ function mtimeOf(file) {
 }
 
 // procStart("Sat Sep 26 01:35:01 2026" 形式)と ps の開始時刻(ms)が同じプロセスを指すか。
-// procStart は UTC で書かれているが、念のためローカル時刻としての解釈も許す
+// procStart は UTC で書かれているが、念のためローカル時刻としての解釈も許す。
+// Windows 版は FILETIME(1601-01-01 からの 100ns 単位)の数字列("134348756588309848")を書く
 function sameStart(procStart, psMs) {
   if (!procStart || psMs == null) return true; // 比べられないときは生存扱いのまま
+  if (/^\d{15,}$/.test(String(procStart))) {
+    const ms = Number(BigInt(String(procStart)) / 10000n) - 11644473600000;
+    return Math.abs(ms - psMs) < 1500;
+  }
   const utc = Date.parse(`${procStart} GMT`);
   const local = Date.parse(procStart);
   return [utc, local].some((t) => !Number.isNaN(t) && Math.abs(t - psMs) < 1500);

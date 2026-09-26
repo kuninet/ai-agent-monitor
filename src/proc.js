@@ -8,6 +8,42 @@ function ps(args) {
   return run('ps', args, { env: { ...process.env, LC_ALL: 'C' } });
 }
 
+const WIN = process.platform === 'win32';
+
+// Windows には ps が無い(Git Bash の ps は書式が違う)ので、PowerShell の Win32_Process で代わりに取る。
+// 開始時刻は DateTime の JSON 書式に頼らず、PowerShell 側で epoch ms にしてから出す
+const WIN_PS = [
+  '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+  'Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; name = $_.Name; cmd = $_.CommandLine;' +
+    ' start = if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { $null } } } | ConvertTo-Json -Compress',
+].join('; ');
+
+// powershell.exe の実行は 1 秒ほどかかるので、1 回の集計(各コレクタが並行に呼ぶ)で 1 度で済むよう結果を短く使い回す
+const WIN_TTL = 2000;
+let winCache = null; // {at, promise}
+
+// [{pid, name, cmd, start}]。取れなければ空配列
+function winProcesses() {
+  if (winCache && Date.now() - winCache.at < WIN_TTL) return winCache.promise;
+  const promise = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WIN_PS], {
+    windowsHide: true,
+    timeout: 15000,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+    .then(({ stdout }) => {
+      const j = JSON.parse(stdout || '[]');
+      return (Array.isArray(j) ? j : [j]).map((p) => ({
+        pid: Number(p.pid),
+        name: String(p.name ?? ''),
+        cmd: String(p.cmd ?? ''),
+        start: typeof p.start === 'number' ? p.start : null,
+      }));
+    })
+    .catch(() => []);
+  winCache = { at: Date.now(), promise };
+  return promise;
+}
+
 export function pidAlive(pid) {
   if (!pid) return false;
   try {
@@ -20,6 +56,7 @@ export function pidAlive(pid) {
 
 // 同一ユーザーのプロセスの環境変数から ORCA_PANE_KEY を取る(macOS の ps eww)。
 export async function paneKeyOf(pid) {
+  if (WIN) return null; // Windows では環境変数を読めない(Orca も Mac 用)
   try {
     const { stdout } = await ps(['eww', '-o', 'command=', '-p', String(pid)]);
     return stdout.match(/\bORCA_PANE_KEY=(\S+)/)?.[1] ?? null;
@@ -40,6 +77,11 @@ function lstartMs(s) {
 export async function procStarts(pids) {
   const out = new Map();
   if (!pids.length) return out;
+  if (WIN) {
+    const want = new Set(pids.map(Number));
+    for (const p of await winProcesses()) if (want.has(p.pid)) out.set(p.pid, p.start);
+    return out;
+  }
   let stdout = '';
   try {
     ({ stdout } = await ps(['-o', 'pid=,lstart=', '-p', pids.join(',')]));
@@ -57,6 +99,15 @@ export async function procStarts(pids) {
 
 // 起動中の agy プロセス: [{pid, conversationId, startedAt}]
 export async function agyProcesses() {
+  if (WIN) {
+    return (await winProcesses())
+      .filter((p) => /^agy(\.exe)?$/i.test(p.name))
+      .map((p) => ({
+        pid: p.pid,
+        conversationId: p.cmd.match(/--conversation[= ]"?([^\s"]+)/)?.[1] ?? null,
+        startedAt: p.start,
+      }));
+  }
   try {
     const { stdout } = await ps(['-axo', 'pid=,lstart=,command=']);
     const out = [];
@@ -81,6 +132,16 @@ export async function agyProcesses() {
 
 // 実行ファイル名が codex のプロセス(CLI や app-server)の pid 一覧
 export async function codexProcesses() {
+  // Windows では codex.exe のほか、npm 版の node.exe …\codex\bin\codex.js も数える
+  if (WIN) {
+    return (await winProcesses())
+      .filter(
+        (p) =>
+          /^codex(\.exe)?$/i.test(p.name) ||
+          (/^node(\.exe)?$/i.test(p.name) && /[\\/]codex[\\/]bin[\\/]codex\.js\b/i.test(p.cmd)),
+      )
+      .map((p) => p.pid);
+  }
   try {
     const { stdout } = await ps(['-axo', 'pid=,command=']);
     const out = [];

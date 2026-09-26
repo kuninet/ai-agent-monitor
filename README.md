@@ -17,7 +17,14 @@ API キーやネットワーク接続は使いません。手元に残るログ�
 
 - Node.js 22.13 以上(24 で動作確認)
 - macOS(プロセス情報の取得に `ps` を使っています)
+- Windows(ネイティブ。プロセス情報の取得に PowerShell の `Get-CimInstance` を使っています。どちらも Windows 標準です)
 - 依存パッケージはありません
+
+Windows(ネイティブ)で使うときは次の点に注意してください。
+
+- Windows ネイティブで動かしているエージェントのログだけを集計します。WSL 側で動かしているエージェントのログは読みません
+- ログの場所の `~` は `%USERPROFILE%`(`C:\Users\<ユーザー名>`)です
+- Orca の ↗ ボタンは出ません
 
 ## 起動
 
@@ -50,15 +57,40 @@ node src/server.js --agents claude,codex  # 監視するエージェントを指
 
 ### Claude Code
 
-statusline のスクリプトで、入力を読み込んだ直後に次の 1 行を足してください。
+同梱の `src/statusline-save.js` が statusline の入力を `~/.ai-status/claude/<session_id>.json` に保存します。`~/.claude/settings.json` の `statusLine.command` で呼び出してください。この設定が無くても、使用枠以外の項目は表示されます。
+
+statusline を使っている場合は、今の `command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --tee | ` を付けます(`/path/to/ai-agent-monitor` はこのリポジトリの場所に読み替えてください)。`--tee` を付けると入力をそのまま後ろのコマンドに渡すので、今のスクリプトは書き換えずに済みます。
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js --tee | ~/.claude/statusline.sh"
+  }
+}
+```
+
+statusline を使っていない場合は、次のように登録します。保存するだけなので、statusline には何も表示されません。
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js"
+  }
+}
+```
+
+Windows ではパスを `C:/Users/<ユーザー名>/git/ai-agent-monitor/src/statusline-save.js` のようにスラッシュで書いてください。
+
+statusline のスクリプトの中から呼ぶこともできます。
 
 ```sh
 input=$(cat)
-
-{ SID=$(printf '%s' "$input" | jq -r '.session_id // empty') && [ -n "$SID" ] && mkdir -p "$HOME/.ai-status/claude" && printf '%s' "$input" > "$HOME/.ai-status/claude/$SID.json"; } 2>/dev/null || true
+printf '%s' "$input" | node /path/to/ai-agent-monitor/src/statusline-save.js
 ```
 
-`jq` が必要です。この設定が無くても、使用枠以外の項目は表示されます。
+保存に失敗しても何も出力せず正常終了するので、statusline の表示は妨げません。
 
 ### Codex
 
@@ -81,7 +113,7 @@ input=$(cat)
 | agy のタスク | `~/.gemini/antigravity{,-cli}/brain/<id>/task.md` |
 | agy の会話一覧 | `~/.gemini/antigravity{,-cli}/conversation_summaries.db` |
 
-書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。agy の statusline 入力を会話ごとに保存し、メールアドレスは保存前に取り除きます。Claude Code 用に statusline へ上の 1 行を足した場合は、その入力が `~/.ai-status/claude/` に保存されます。
+書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。agy の statusline 入力を会話ごとに保存し、メールアドレスは保存前に取り除きます。Claude Code の statusline から `src/statusline-save.js` を呼ぶよう設定した場合は、その入力が `~/.ai-status/claude/` に保存されます。
 
 各指標の定義と判定ルールは [docs/DESIGN.md](docs/DESIGN.md) にまとめています。
 
