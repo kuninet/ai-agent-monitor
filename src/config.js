@@ -30,21 +30,41 @@ function detected(def) {
   });
 }
 
-// 設定ファイルが無い・壊れているときは、データのあるエージェントすべて
-function savedAgents() {
+const PLAN_MAX_USD = 10000;
+
+// プランの月額(USD)。0 より大きく上限以下の有限の数値だけを有効とし、小数第 2 位で丸める。それ以外は null
+export function normalizePlanUSD(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > PLAN_MAX_USD) return null;
+  const rounded = Math.round(v * 100) / 100;
+  return rounded > 0 ? rounded : null;
+}
+
+// 設定ファイルの中身。無い・壊れているときは空のオブジェクト
+function readFile() {
   try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    const agents = normalizeAgents(cfg?.agents);
-    if (agents) return agents;
-  } catch {}
-  return AGENT_DEFS.filter(detected).map((d) => d.id);
+    return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  } catch {
+    return {};
+  }
+}
+
+// 設定ファイルに agents が無い・壊れているときは、データのあるエージェントすべて
+function savedAgents(cfg = readFile()) {
+  return normalizeAgents(cfg.agents) ?? AGENT_DEFS.filter(detected).map((d) => d.id);
+}
+
+export function planMonthlyUSD() {
+  return normalizePlanUSD(readFile().claudePlanMonthlyUSD);
 }
 
 export function getConfig() {
+  const cfg = readFile();
   return {
-    agents: override ?? savedAgents(),
+    agents: override ?? savedAgents(cfg),
     available: AGENT_DEFS.map((d) => ({ id: d.id, label: d.label, detected: detected(d) })),
     locked: override !== null,
+    claudePlanMonthlyUSD: normalizePlanUSD(cfg.claudePlanMonthlyUSD),
   };
 }
 
@@ -52,22 +72,43 @@ export function enabledAgents() {
   return override ?? savedAgents();
 }
 
-// 保存して新しい設定を返す。--agents で固定されているときは例外(code: 'LOCKED')
-export function saveConfig(list) {
-  if (override !== null) {
-    const e = new Error('起動オプション --agents で指定されているため変更できません');
-    e.code = 'LOCKED';
-    throw e;
+function fail(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  return e;
+}
+
+// 本文 { agents?, claudePlanMonthlyUSD? } で部分更新し、新しい設定を返す。含まれないキーは今の値を保つ。
+// 不正な値は例外(code: 'INVALID')。--agents で固定されているときに agents を変えようとしたら例外(code: 'LOCKED')
+export function saveConfig(patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw fail('INVALID', '本文は { agents, claudePlanMonthlyUSD } の形のオブジェクトで指定してください');
   }
-  const agents = normalizeAgents(list);
-  if (!agents || agents.length === 0) {
-    const e = new Error('agents には監視するエージェントを 1 つ以上、文字列の配列で指定してください');
-    e.code = 'INVALID';
-    throw e;
+  const hasAgents = 'agents' in patch;
+  const hasPlan = 'claudePlanMonthlyUSD' in patch;
+  if (!hasAgents && !hasPlan) throw fail('INVALID', 'agents か claudePlanMonthlyUSD を指定してください');
+
+  const cfg = readFile();
+  if (hasAgents) {
+    if (override !== null) throw fail('LOCKED', '起動オプション --agents で指定されているため変更できません');
+    const agents = normalizeAgents(patch.agents);
+    if (!agents || agents.length === 0) {
+      throw fail('INVALID', 'agents には監視するエージェントを 1 つ以上、文字列の配列で指定してください');
+    }
+    cfg.agents = agents;
   }
+  if (hasPlan) {
+    const v = patch.claudePlanMonthlyUSD;
+    const plan = v === null ? null : normalizePlanUSD(v);
+    if (v !== null && plan === null) {
+      throw fail('INVALID', `claudePlanMonthlyUSD は 0 より大きく ${PLAN_MAX_USD} 以下の数値か、null で指定してください`);
+    }
+    cfg.claudePlanMonthlyUSD = plan;
+  }
+
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const tmp = `${CONFIG_FILE}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify({ agents }, null, 2)}\n`);
+  fs.writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`);
   fs.renameSync(tmp, CONFIG_FILE);
   return getConfig();
 }
