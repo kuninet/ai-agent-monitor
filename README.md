@@ -118,7 +118,21 @@ printf '%s' "$input" | node /path/to/ai-agent-monitor/src/statusline-save.js
 
 ### Antigravity CLI
 
-設定は不要です。agy が書き出す `~/.gemini/antigravity-cli/last_statusline_input.json` を、ダッシュボードの起動中に会話ごと `~/.ai-status/agy/` へ保存します。そのため使用量とコンテキスト使用率が出るのは、ダッシュボードが起動している間に statusline が更新された会話だけです。
+agy の statusline を有効にしてください。agy は statusline を使っているときだけ、その入力を `~/.gemini/antigravity-cli/last_statusline_input.json` に書き出します。statusline を使っていないとこのファイルが作られず、使用枠・コンテキスト使用率・モデル名は「データなし」になります(会話やツールの集計は表示されます)。
+
+statusline は `~/.gemini/antigravity-cli/settings.json` の `statusLine` で設定します。表示に使うスクリプトは何でもかまいません。
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/statusline.js",
+    "enabled": true
+  }
+}
+```
+
+ダッシュボードは、このファイルを起動中に会話ごと `~/.ai-status/agy/` へ保存します。そのため使用量とコンテキスト使用率が出るのは、ダッシュボードが起動している間に statusline が更新された会話だけです。
 
 ## 読み込むファイル
 
