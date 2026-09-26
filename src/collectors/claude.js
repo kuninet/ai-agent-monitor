@@ -153,6 +153,12 @@ function ingest(st, x, sub) {
     if (x.gitBranch) st.branch = x.gitBranch;
   }
 
+  // バックグラウンドのサブエージェントの完了通知(<task-notification>)。起動した tool_use に結果が返ったのと同じに扱う
+  if (x.type === 'queue-operation' && !side && typeof x.content === 'string') {
+    const m = x.content.match(/<tool-use-id>([^<]+)<\/tool-use-id>[\s\S]*?<status>(\w+)<\/status>/);
+    if (m && m[2] !== 'running') st.answered.add(m[1]);
+    return;
+  }
   if (x.type === 'ai-title' && !side) {
     if (x.aiTitle) st.aiTitle = x.aiTitle;
     return;
@@ -240,7 +246,8 @@ function ingest(st, x, sub) {
       for (const r of results) {
         const id = r.tool_use_id;
         if (!id) continue;
-        st.answered.add(id);
+        // バックグラウンドで起動したサブエージェント(Agent の async_launched)は、起動の返事なので完了とみなさない
+        if (x.toolUseResult?.status !== 'async_launched') st.answered.add(id);
         const began = st.pendingTools.get(id);
         if (began != null && ts != null && ts > began) {
           st.pendingTools.delete(id);
@@ -369,9 +376,14 @@ function mtimeOf(file) {
 }
 
 // procStart("Sat Sep 26 01:35:01 2026" 形式)と ps の開始時刻(ms)が同じプロセスを指すか。
-// procStart は UTC で書かれているが、念のためローカル時刻としての解釈も許す
+// procStart は UTC で書かれているが、念のためローカル時刻としての解釈も許す。
+// Windows 版は FILETIME(1601-01-01 からの 100ns 単位)の数字列("134348756588309848")を書く
 function sameStart(procStart, psMs) {
   if (!procStart || psMs == null) return true; // 比べられないときは生存扱いのまま
+  if (/^\d{15,}$/.test(String(procStart))) {
+    const ms = Number(BigInt(String(procStart)) / 10000n) - 11644473600000;
+    return Math.abs(ms - psMs) < 1500;
+  }
   const utc = Date.parse(`${procStart} GMT`);
   const local = Date.parse(procStart);
   return [utc, local].some((t) => !Number.isNaN(t) && Math.abs(t - psMs) < 1500);

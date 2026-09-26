@@ -328,7 +328,8 @@ function summaries(errors) {
   return out;
 }
 
-// last_statusline_input.json を会話ごとに ~/.ai-status/agy/<convId>.json へ蓄積する
+// last_statusline_input.json(ユーザーが自作の statusline スクリプトで書き出すもの)を
+// 会話ごとに ~/.ai-status/agy/<convId>.json へ蓄積する
 function captureStatusline(errors) {
   const st = statOf(STATUSLINE_INPUT);
   if (!st) return null;
@@ -337,7 +338,8 @@ function captureStatusline(errors) {
   if (!id || !/^[\w-]+$/.test(id)) return input ? { input, mtimeMs: st.mtimeMs } : null;
   const dest = path.join(SAVE_DIR, `${id}.json`);
   const saved = readJson(dest);
-  if (!saved || saved.capturedAt !== Math.round(st.mtimeMs)) {
+  // statusline-save.js --agy が保存した、より新しい入力は上書きしない
+  if (!saved || !(saved.capturedAt >= Math.round(st.mtimeMs))) {
     try {
       fs.mkdirSync(SAVE_DIR, { recursive: true });
       const tmp = `${dest}.${process.pid}.tmp`;
@@ -354,6 +356,42 @@ function captureStatusline(errors) {
 
 function savedStatusline(id) {
   return readJson(path.join(SAVE_DIR, `${id}.json`));
+}
+
+// ~/.ai-status/agy/ の中で最も新しい入力 {input, mtimeMs}。mtimeMs には capturedAt(無ければ mtime)を入れる。
+// capturedAt は書き込み前の時刻か写し元の mtime なので、ファイルの mtime を超えない。
+// mtime の新しい順に読み、それが見つかった capturedAt より古くなったら打ち切る
+function newestSavedStatusline() {
+  let names;
+  try {
+    names = fs.readdirSync(SAVE_DIR).filter((n) => n.endsWith('.json'));
+  } catch {
+    return null;
+  }
+  const files = [];
+  for (const n of names) {
+    const st = statOf(path.join(SAVE_DIR, n));
+    if (st?.isFile()) files.push({ file: path.join(SAVE_DIR, n), mtimeMs: st.mtimeMs });
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let best = null;
+  for (const { file, mtimeMs } of files) {
+    if (best && mtimeMs < best.mtimeMs) break;
+    const input = readJson(file);
+    if (!input || typeof input !== 'object') continue;
+    const at = typeof input.capturedAt === 'number' ? input.capturedAt : mtimeMs;
+    if (!best || at > best.mtimeMs) best = { input, mtimeMs: at };
+  }
+  return best;
+}
+
+// 使用枠に使う「最新の入力」。last_statusline_input.json が無いか、statusline-save.js --agy が
+// 保存したものの方が新しければ、そちらを使う(同じ時刻なら last_statusline_input.json)
+function latestStatusline(errors) {
+  const fromFile = captureStatusline(errors);
+  const saved = newestSavedStatusline();
+  if (saved && (!fromFile || saved.mtimeMs > Math.round(fromFile.mtimeMs))) return saved;
+  return fromFile;
 }
 
 // task.md のチェックボックス行をタスクにする。インデントで階層化し id は 1, 1.2 のような番号
@@ -545,7 +583,7 @@ export async function collect({ since = 0 } = {}) {
   }
 
   // ここから先はキャッシュを触るので await を挟まない
-  const latest = captureStatusline(errors);
+  const latest = latestStatusline(errors);
   const sums = summaries(errors);
   const brains = scanBrains();
 

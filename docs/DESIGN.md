@@ -169,7 +169,7 @@ Blocker は、blockedBy のうち完了していないタスクだけを出し�
 
 - Claude: statusline の入力を `~/.ai-status/claude/<sessionId>.json` に保存してもらい、そこから読みます。使用枠はアカウント共通なので、最も新しいファイルの値を使います。コンテキスト使用率はセッションごとの値を使い、保存が無いセッションは最後の応答の入力トークン数から計算します
 - Codex: 会話記録の `token_count` に含まれる `rate_limits` を使います。`window_minutes` が 300 なら 5 時間枠、10080 なら週次枠です
-- agy: `last_statusline_input.json` を収集のたびに会話ごとに保存し、そこから読みます
+- agy: statusline の入力を `src/statusline-save.js --agy` で `~/.ai-status/agy/<conversationId>.json` に保存してもらい、そこから読みます。自作の statusline スクリプトが書く `last_statusline_input.json` があれば、収集のたびに同じ場所へ会話ごとに写します(保存済みの方が新しければ写しません)。使用枠はアカウント共通なので、`last_statusline_input.json` と保存済みファイルのうち最も新しい入力(`capturedAt`、無ければ更新時刻)の値を使います。コンテキスト使用率とモデル名は会話ごとの保存から読みます
 - リセット時刻を過ぎた枠は、古いデータとして表示します
 
 ## サブエージェント

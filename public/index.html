@@ -292,6 +292,7 @@
   }
   .quota-label { color: var(--fg); }
   .quota-empty { color: var(--muted); grid-column: 2 / span 3; }
+  .quota-hint { color: var(--muted); font-size: 12px; padding-top: 4px; }
   .bar-track {
     background: var(--bar-track);
     border-radius: 5px;
@@ -891,6 +892,10 @@
       return { plan: q && q.plan, rows: [["5h枠", q && q.fiveHour], ["週次枠", q && q.weekly]] };
     }
   };
+  // Claude Code の使用枠は statusline の入力を保存しないと取れない。保存が無いときに案内する README の節
+  var CLAUDE_QUOTA_HELP_URL = "https://github.com/kuninet/ai-agent-monitor#使用枠5-時間枠週次枠を表示する設定";
+  // agy の使用枠も statusline の入力を保存しないと取れない。保存が無いときに案内する README の節
+  var AGY_QUOTA_HELP_URL = "https://github.com/kuninet/ai-agent-monitor#antigravity-cli";
   function renderQuota(quota, enabledAgents) {
     clear(quotaGrid);
     quota = quota || {};
@@ -906,6 +911,22 @@
       if (conf.plan) titleRow.appendChild(el("span", { class: "quota-plan", text: conf.plan }));
       var card = el("div", { class: "card" }, [titleRow]);
       conf.rows.forEach(function (pair) { card.appendChild(quotaRow(pair[0], pair[1])); });
+      if (agentId === "claude" && !quota.claude) {
+        card.appendChild(el("div", { class: "quota-hint" }, [
+          el("code", { text: "npm run setup-statusline" }),
+          " で設定できます(",
+          el("a", { href: CLAUDE_QUOTA_HELP_URL, target: "_blank", rel: "noopener noreferrer", text: "詳細" }),
+          ")"
+        ]));
+      }
+      if (agentId === "agy" && !quota.agy) {
+        card.appendChild(el("div", { class: "quota-hint" }, [
+          el("code", { text: "npm run setup-statusline -- --agy" }),
+          " で設定できます(",
+          el("a", { href: AGY_QUOTA_HELP_URL, target: "_blank", rel: "noopener noreferrer", text: "詳細" }),
+          ")"
+        ]));
+      }
       quotaGrid.appendChild(card);
     });
   }

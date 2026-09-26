@@ -18,6 +18,8 @@ API キーやネットワーク接続は使いません。手元に残るログ�
 - Node.js 22.13 以上(24 で動作確認)
 - macOS または Linux(WSL2 を含む)
   - プロセス情報の取得に `ps` を使っています。Linux では procps(procps-ng)版の `ps` が必要です(Ubuntu や Debian などは標準)
+- Windows(ネイティブ)
+  - プロセス情報の取得に PowerShell の `Get-CimInstance` を使っています。どちらも Windows 標準です
 - 依存パッケージはありません
 
 WSL2 で使うときは次の点に注意してください。
@@ -25,6 +27,12 @@ WSL2 で使うときは次の点に注意してください。
 - WSL 側で動かしているエージェントのログだけを集計します。Windows ネイティブで動かしているエージェントのログは読みません
 - 画面は Windows 側のブラウザから `http://127.0.0.1:4777/` で開けます(WSL2 の localhost 転送が有効な場合)
 - WSL のターミナルをすべて閉じると、しばらくして WSL ごとダッシュボードも止まります
+
+Windows(ネイティブ)で使うときは次の点に注意してください。
+
+- Windows ネイティブで動かしているエージェントのログだけを集計します。WSL 側で動かしているエージェントのログは読みません
+- ログの場所の `~` は `%USERPROFILE%`(`C:\Users\<ユーザー名>`)です
+- Orca の ↗ ボタンは出ません
 
 ## 起動
 
@@ -57,15 +65,52 @@ node src/server.js --agents claude,codex  # 監視するエージェントを指
 
 ### Claude Code
 
-statusline のスクリプトで、入力を読み込んだ直後に次の 1 行を足してください。
+このリポジトリで `npm run setup-statusline` を実行してください。この設定が無くても、使用枠以外の項目は表示されます。
+
+変更前と変更後の `command` を表示し、確認のうえ `~/.claude/settings.json` の `statusLine.command` に保存用スクリプトを挟みます。書き込む前に元のファイルを `settings.json.bak` に保存します。`CLAUDE_CONFIG_DIR` を設定している場合は、そのディレクトリの `settings.json` が対象です。元に戻すときは `npm run setup-statusline -- --remove` を実行します。
+
+仕組みは次のとおりです。Claude Code が statusline に渡す JSON を、同梱の `src/statusline-save.js` が `~/.ai-status/claude/<session_id>.json` に保存し、`--tee` を付けた場合はそのまま今の statusline のスクリプトに渡します。今のスクリプトは書き換えずに済みます。
+
+```
+Claude Code → statusline-save.js --tee → 今の statusline のスクリプト
+                    ↓
+          ~/.ai-status/claude/<session_id>.json
+```
+
+保存に失敗しても何も出力せず正常終了するので、statusline の表示は妨げません。
+
+#### 手で設定する場合
+
+statusline を使っている場合は、今の `command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --tee | ` を付けます(`/path/to/ai-agent-monitor` はこのリポジトリの場所に読み替えてください)。
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js --tee | ~/.claude/statusline.sh"
+  }
+}
+```
+
+statusline を使っていない場合は、次のように登録します。保存するだけなので、statusline には何も表示されません。
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js"
+  }
+}
+```
+
+Windows ではパスを `C:/Users/<ユーザー名>/git/ai-agent-monitor/src/statusline-save.js` のようにスラッシュで書いてください。パスに空白を含む場合は `"` で囲みます。
+
+statusline のスクリプトの中から呼ぶこともできます。
 
 ```sh
 input=$(cat)
-
-{ SID=$(printf '%s' "$input" | jq -r '.session_id // empty') && [ -n "$SID" ] && mkdir -p "$HOME/.ai-status/claude" && printf '%s' "$input" > "$HOME/.ai-status/claude/$SID.json"; } 2>/dev/null || true
+printf '%s' "$input" | node /path/to/ai-agent-monitor/src/statusline-save.js
 ```
-
-`jq` が必要です。この設定が無くても、使用枠以外の項目は表示されます。
 
 ### Codex
 
@@ -73,7 +118,37 @@ input=$(cat)
 
 ### Antigravity CLI
 
-設定は不要です。agy が書き出す `~/.gemini/antigravity-cli/last_statusline_input.json` を、ダッシュボードの起動中に会話ごと `~/.ai-status/agy/` へ保存します。そのため使用量とコンテキスト使用率が出るのは、ダッシュボードが起動している間に statusline が更新された会話だけです。
+このリポジトリで `npm run setup-statusline -- --agy` を実行してください。使用枠のほか、セッションごとのコンテキスト使用率とモデル名もこの設定で表示されるようになります。設定が無くても、会話やツールの集計は表示されます。
+
+変更前と変更後の `command` を表示し、確認のうえ `~/.gemini/antigravity-cli/settings.json` の `statusLine.command` に保存用スクリプトを挟みます。書き込む前に元のファイルを `settings.json.bak` に保存します。`statusLine` が無い場合は、保存だけを行う `statusLine` を `"enabled": true` で追加します。`"enabled": false` になっている場合は書き換えないので、agy の設定で有効にしてください。元に戻すときは `npm run setup-statusline -- --agy --remove` を実行します。
+
+仕組みは Claude Code と同じです。agy が statusline に渡す JSON を、`src/statusline-save.js --agy` が `~/.ai-status/agy/<conversation_id>.json` に保存します。メールアドレスは保存前に取り除きます。statusline に何を表示するかは関係ありません。保存は agy が statusline を呼ぶたびに行われるので、ダッシュボードが止まっている間の分も残ります。
+
+```
+agy → statusline-save.js --agy --tee → 今の statusline のスクリプト
+                    ↓
+          ~/.ai-status/agy/<conversation_id>.json
+```
+
+#### 手で設定する場合
+
+`~/.gemini/antigravity-cli/settings.json` の `statusLine.command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --agy --tee | ` を付けます。statusline を使っていない場合は、`command` を `node /path/to/ai-agent-monitor/src/statusline-save.js --agy` にします。パスの書き方は Claude Code の場合と同じです。
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/ai-agent-monitor/src/statusline-save.js --agy --tee | node /path/to/statusline.js",
+    "enabled": true
+  }
+}
+```
+
+自作の statusline スクリプトで入力を `~/.gemini/antigravity-cli/last_statusline_input.json` に書き出している場合は、そのファイルも引き続き読みます。
+
+#### タスクの表示
+
+agy のタスクは、agy が会話ごとに書く `task.md` から読みます。agy は Planning Mode で作業するときに `task.md` を作るので、タスクを表示したいときは依頼の頭に `/plan` を付けてください。調べものなど、計画が要らないと agy が判断した依頼では作られないことがあります。
 
 ## 読み込むファイル
 
@@ -87,8 +162,9 @@ input=$(cat)
 | agy の会話記録 | `~/.gemini/antigravity{,-cli}/brain/<id>/.system_generated/logs/transcript.jsonl` |
 | agy のタスク | `~/.gemini/antigravity{,-cli}/brain/<id>/task.md` |
 | agy の会話一覧 | `~/.gemini/antigravity{,-cli}/conversation_summaries.db` |
+| agy の statusline 入力 | `~/.ai-status/agy/<conversation_id>.json` と、あれば `~/.gemini/antigravity-cli/last_statusline_input.json` |
 
-書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。agy の statusline 入力を会話ごとに保存し、メールアドレスは保存前に取り除きます。Claude Code 用に statusline へ上の 1 行を足した場合は、その入力が `~/.ai-status/claude/` に保存されます。
+ダッシュボードが書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。`last_statusline_input.json` がある場合は、その内容を会話ごとに `~/.ai-status/agy/` へ写し、メールアドレスは保存前に取り除きます。statusline から `src/statusline-save.js` を呼ぶよう設定した場合は、その入力が `~/.ai-status/claude/`(`--agy` 付きなら `~/.ai-status/agy/`)に保存されます。`npm run setup-statusline` は、確認のうえ `~/.claude/settings.json`(`--agy` 付きなら `~/.gemini/antigravity-cli/settings.json`)とそのバックアップ `settings.json.bak` に書き込みます。
 
 各指標の定義と判定ルールは [docs/DESIGN.md](docs/DESIGN.md) にまとめています。
 
