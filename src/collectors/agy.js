@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { newCursor, readAppended, readJson } from '../jsonl.js';
 import { agyProcesses, paneKeyOf } from '../proc.js';
 import { pendingTextQuestion } from '../textQuestion.js';
+import { TURN_GAP_MS, gapIntervals, mergeIntervals, subtractIntervals } from '../work.js';
 
 const HOME = os.homedir();
 const ROOTS = [path.join(HOME, '.gemini', 'antigravity-cli'), path.join(HOME, '.gemini', 'antigravity')];
@@ -117,6 +118,9 @@ function derive(st) {
     lastAskDoneStep: -1, // 回答済み(完了した)ASK_QUESTION ステップ
     lastHumanTs: null,
     finalResponse: null, // tool_calls の無い最後の PLANNER_RESPONSE {ts, text}。その後にツール呼び出しがあれば null
+    // USER_INPUT(人・自動)から次の USER_INPUT の直前までのステップ {start, end, times, waits}
+    //   times はステップの時刻、waits は ask_question の回答待ち(ASK_QUESTION ステップから次のステップまで)
+    turns: [],
   };
   const recs = [...st.steps.values()].sort((a, b) => a.step - b.step);
   // 直前の PLANNER_RESPONSE が出したツール呼び出しのうち、実行ステップがまだ来ていないもの
@@ -125,10 +129,23 @@ function derive(st) {
     for (const q of queue) d.tools.push({ ts: q.ts, name: q.name, error: false, denied: false });
     queue = [];
   };
+  let askWait = null; // 回答待ちの ask_question {start, turn}
   for (const r of recs) {
     const { ts, step } = r;
     if (ts != null) {
       if (d.startedAt == null || ts < d.startedAt) d.startedAt = ts;
+      if (askWait && ts > askWait.start) {
+        askWait.turn.waits.push({ start: askWait.start, end: ts });
+        askWait = null;
+      }
+      if (r.type === 'USER_INPUT') d.turns.push({ start: ts, end: ts, times: [ts], waits: [] });
+      else {
+        const t = d.turns.at(-1);
+        if (t) {
+          if (ts > t.end) t.end = ts;
+          t.times.push(ts);
+        }
+      }
       if (d.updatedAt == null || ts > d.updatedAt) d.updatedAt = ts;
     }
     if (r.type === 'USER_INPUT') {
@@ -154,6 +171,9 @@ function derive(st) {
     } else if (r.type === 'ASK_QUESTION') {
       // ask_question への回答は USER_INPUT ではなくこのステップの完了として記録される
       if (r.status !== 'RUNNING' && r.status !== 'PENDING' && step > d.lastAskDoneStep) d.lastAskDoneStep = step;
+      // 回答は次のステップの時刻までに届いている
+      const turn = d.turns.at(-1);
+      if (ts != null && turn) askWait = { start: ts, turn };
     } else if (r.type === 'CHECKPOINT') {
       d.compact.push({ ts, droppedTokens: null });
     }
@@ -390,6 +410,18 @@ function limitOf(q, now) {
 }
 
 // 子会話(サブエージェント)1 件分
+// 作業区間: ターンごとの [USER_INPUT, 最後のステップ]。実行中なら最後のターンは now まで。
+// ターンの中でステップの間隔が TURN_GAP_MS を超えたところと、ask_question の回答待ちは除く
+function workOf(turns, running, now) {
+  const out = [];
+  turns.forEach((t, i) => {
+    const end = running && i === turns.length - 1 ? now : t.end;
+    const spans = gapIntervals([...t.times, end], TURN_GAP_MS);
+    out.push(...subtractIntervals(spans, t.waits));
+  });
+  return mergeIntervals(out);
+}
+
 function buildChild(id, brain, cache, sum, now) {
   const st = derive(cache?.state ?? newState());
   const mtimeMs = Math.round(brain?.mtimeMs ?? 0);
@@ -407,7 +439,7 @@ function buildChild(id, brain, cache, sum, now) {
     startedAt: st.startedAt,
     updatedAt: Math.max(st.updatedAt ?? 0, mtimeMs, sum?.lastModified ?? 0) || null,
     lastTool: last ? { name: last.name, ts: last.ts } : null,
-    events: { usage: [], tools: [...st.tools] },
+    events: { usage: [], tools: [...st.tools], work: workOf(st.turns, running, now) },
     // 親の指標に合算する分
     extra: { compact: st.compact, auto: st.auto },
   };
@@ -489,6 +521,8 @@ function buildSession(id, brain, cache, sum, pid, now, children = []) {
     events: {
       usage,
       tools: [...st.tools, ...children.flatMap((c) => c.events.tools)],
+      // サブエージェント(子会話)は並行して動くので、作業区間は親の分だけ
+      work: workOf(st.turns, status === 'running', now),
       compact: [...st.compact, ...children.flatMap((c) => c.extra.compact)],
       auto: [...st.auto, ...children.flatMap((c) => c.extra.auto)],
     },
