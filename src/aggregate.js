@@ -295,6 +295,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       model: s.model,
       status: s.status,
       live: s.live,
+      liveBy: s.liveBy ?? null,
       updatedAt: s.updatedAt,
       startedAt: s.startedAt,
       workMs,
