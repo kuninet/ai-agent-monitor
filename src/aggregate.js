@@ -270,8 +270,10 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
         project: s.project,
         ts: q.ts,
         kind: q.kind,
+        level: q.level ?? 'question',
         text: q.text,
         options: q.options,
+        matched: q.matched ?? [],
       });
     }
 
@@ -296,7 +298,9 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       autoContinues: autos,
       context: s.context,
       openTasks,
-      questions: s.questions.length,
+      // 質問(選択式と文中の質問)と、確認待ち(依頼の言い回しだけの文)を分けて数える
+      questions: s.questions.filter((q) => (q.level ?? 'question') === 'question').length,
+      requests: s.questions.filter((q) => q.level === 'request').length,
       canJump: resolveHandle(s, list) != null,
       subagents,
       subagentSummary: { total: subagents.length, running: subagents.filter((a) => a.status === 'running').length },
@@ -357,7 +361,8 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       droppedTokens,
       autoContinues,
       tasks: taskCount,
-      questions: questions.length,
+      questions: questions.filter((q) => q.level === 'question').length,
+      requests: questions.filter((q) => q.level === 'request').length,
       sessions: sessCount,
     },
     sessions,

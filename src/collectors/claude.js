@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { newCursor, readAppended, readJson } from '../jsonl.js';
 import { costOf } from '../pricing.js';
+import { pendingTextQuestion } from '../textQuestion.js';
 import { pidAlive, paneKeyOf, procStarts } from '../proc.js';
 
 const HOME = os.homedir();
@@ -43,7 +44,8 @@ function newState() {
     pendingCreates: new Map(), // TaskCreate の tool_use id → {subject, activeForm}
     pendingUpdates: new Map(), // TaskUpdate の tool_use id → input(tool_result が成功したら反映)
     tasks: new Map(), // task id → {id, title, status, blockedBy, activeForm}
-    lastAssistant: null, // {ts, text}
+    // 最後のアシスタントのメッセージ群(人やツール結果の行の後から続く assistant 行)で、最後の tool_use より後の text
+    finalGroup: null, // {ts, texts: string[]}
     lastHumanTs: null,
     // サブエージェントの状態判定用
     lastModel: null,
@@ -69,6 +71,12 @@ function textOf(content) {
   return content
     .map((b) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text ?? '' : ''))
     .join('\n');
+}
+
+// 別のセッションから届いたメッセージ(origin が付かずに user 行として記録される)
+function isTeammateMessage(content) {
+  const text = textOf(content).trimStart();
+  return text.startsWith('Another Claude session sent a message:') || text.includes('<teammate-message');
 }
 
 function applyTaskUpdate(st, input) {
@@ -146,6 +154,16 @@ function ingest(st, x, sub) {
       st.lastStop = msg.stop_reason;
     }
     if (Array.isArray(msg.content) && msg.content.some((b) => b?.type === 'tool_use')) st.lastHasToolUse = true;
+    if (!side && !synthetic) {
+      if (st.userAfterAssistant || !st.finalGroup) st.finalGroup = { ts: null, texts: [] };
+      for (const b of Array.isArray(msg.content) ? msg.content : []) {
+        if (b?.type === 'tool_use') st.finalGroup.texts = [];
+        else if (b?.type === 'text' && b.text?.trim()) {
+          st.finalGroup.texts.push(b.text);
+          st.finalGroup.ts = ts;
+        }
+      }
+    }
     st.userAfterAssistant = false;
     if (!Array.isArray(msg.content)) return;
     for (const b of msg.content) {
@@ -181,8 +199,6 @@ function ingest(st, x, sub) {
             });
           });
         }
-      } else if (b?.type === 'text' && !side && b.text?.trim()) {
-        st.lastAssistant = { ts, text: b.text };
       }
     }
     return;
@@ -232,6 +248,9 @@ function ingest(st, x, sub) {
     if (side) return;
     if (x.origin?.kind && x.origin.kind !== 'human') {
       st.auto.push({ ts, kind: x.origin.kind });
+    } else if (isTeammateMessage(content)) {
+      // 別のセッション(チームメイト)からの報告は、人の発話ではない
+      st.auto.push({ ts, kind: 'teammate' });
     } else if (!x.isMeta && !x.isCompactSummary) {
       if (ts != null) st.lastHumanTs = ts;
       if (!st.firstHumanText) {
@@ -357,16 +376,6 @@ function limitOf(r, now) {
   if (!r || typeof r.used_percentage !== 'number') return null;
   const resetsAt = typeof r.resets_at === 'number' ? r.resets_at * 1000 : null;
   return { pct: r.used_percentage, resetsAt, stale: resetsAt != null && resetsAt < now };
-}
-
-function lastParagraph(text) {
-  const paras = text.trim().split(/\n\s*\n/);
-  return paras[paras.length - 1].trim().slice(0, 200);
-}
-
-function endsWithQuestion(text) {
-  const t = text.replace(/[\s*`]+$/u, '');
-  return t.endsWith('?') || t.endsWith('？');
 }
 
 function usageEvent(u) {
@@ -498,11 +507,18 @@ function buildSession(file, st, subs, live, sl, now) {
   const questions = [];
   if (status !== 'ended') {
     for (const a of pendingAsks) {
-      for (const q of a.questions) questions.push({ ts: a.ts, kind: 'ask', text: q.text, options: q.options });
+      for (const q of a.questions) {
+        questions.push({ ts: a.ts, kind: 'ask', level: 'question', text: q.text, options: q.options, matched: [] });
+      }
     }
-    const la = st.lastAssistant;
-    if (status === 'waiting' && la && (st.lastHumanTs == null || la.ts > st.lastHumanTs) && endsWithQuestion(la.text)) {
-      questions.push({ ts: la.ts, kind: 'text', text: lastParagraph(la.text), options: [] });
+    // 本文中の質問は、ターンが終わっている(実行中でない)ときだけ見る
+    const g = st.finalGroup;
+    if (status !== 'running' && g?.texts.length) {
+      const q = pendingTextQuestion({ ts: g.ts, text: g.texts.join('\n\n') }, st.lastHumanTs);
+      if (q) {
+        questions.push(q);
+        if (q.level === 'question') status = 'question';
+      }
     }
   }
 
