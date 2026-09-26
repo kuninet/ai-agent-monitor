@@ -146,6 +146,10 @@ agy → statusline-save.js --agy --tee → 今の statusline のスクリプト
 
 自作の statusline スクリプトで入力を `~/.gemini/antigravity-cli/last_statusline_input.json` に書き出している場合は、そのファイルも引き続き読みます。
 
+#### タスクの表示
+
+agy のタスクは、agy が会話ごとに書く `task.md` から読みます。agy は Planning Mode で作業するときに `task.md` を作るので、タスクを表示したいときは依頼の頭に `/plan` を付けてください。調べものなど、計画が要らないと agy が判断した依頼では作られないことがあります。
+
 ## 読み込むファイル
 
 | 対象 | 場所 |
