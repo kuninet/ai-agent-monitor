@@ -798,12 +798,13 @@
     enabledAgents = enabledAgents || DEFAULT_ENABLED_AGENTS;
 
     var mtd = kpis.monthToDate || null;
-    var claudeEnabledForCost = !!(mtd && mtd.claudeCostUSD !== null && mtd.claudeCostUSD !== undefined);
+    // Claude が無効かどうかは有効なエージェントの一覧で判断する。monthToDate を返さない古いサーバーでも誤表示しないため
+    var claudeEnabledForCost = enabledAgents.indexOf("claude") !== -1;
     var costSub, costSubTitle = null;
     var unpricedForNote = null; // 補足行の内容に応じて、当月分/表示中の期間分のどちらを見るか切り替える
     if (!claudeEnabledForCost) {
       costSub = "Claude が無効です";
-    } else if (mtd.planMonthlyUSD !== null && mtd.planMonthlyUSD !== undefined && typeof mtd.ratio === "number") {
+    } else if (mtd && mtd.planMonthlyUSD !== null && mtd.planMonthlyUSD !== undefined && typeof mtd.ratio === "number") {
       costSub = "今月 " + fmtUSD(mtd.claudeCostUSD) + "・月額の " + fmtRatio(mtd.ratio) + "倍";
       unpricedForNote = mtd.unpricedModels; // 当月分
     } else {
