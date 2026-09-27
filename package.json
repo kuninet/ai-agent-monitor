@@ -19,7 +19,13 @@
     "test:e2e": "playwright test",
     "lint": "eslint src/",
     "lint:fix": "eslint --fix src/",
-    "format": "prettier --write .",
+    "service": "node src/service.js",
+    "service:install": "node src/service.js install",
+    "service:status": "node src/service.js status",
+    "service:restart": "node src/service.js restart",
+    "service:deploy": "node src/service.js deploy",
+    "service:uninstall": "node src/service.js uninstall",
+    "service:uninstall:purge": "node src/service.js uninstall --purge",
     "prepare": "husky"
   },
   "devDependencies": {

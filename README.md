@@ -55,6 +55,57 @@ node src/server.js --json --range 7d      # 集計結果を JSON で出力して
 node src/server.js --agents claude,codex  # 監視するエージェントを指定する(画面の設定より優先)
 ```
 
+## バックグラウンドサービスとして常駐させる
+
+開発作業(ブランチ切り替えやコード編集)の影響を受けずに、ログイン時に自動起動して常駐させることができます。専用の安定版ディレクトリ(macOS/Linux: `~/.local/share/ai-agent-monitor`、Windows: `%APPDATA%\ai-agent-monitor`)にコードが配置され、バックグラウンドで稼働します。
+
+### 登録と起動(インストール)
+
+```sh
+npm run service:install
+```
+
+- **macOS**: `~/Library/LaunchAgents/com.kuninet.ai-agent-monitor.plist` を作成・登録し、ログイン時の自動起動とプロセス監視を開始します。
+- **Windows**: タスクスケジューラに登録し、ログオン時にバックグラウンドで自動起動します。
+
+※ Windows の場合は、PowerShell またはコマンドプロンプトを「管理者として実行」して実行してください。
+
+### 稼働状態の確認
+
+```sh
+npm run service:status
+```
+
+### サービスの再起動
+
+```sh
+npm run service:restart
+```
+
+### 最新コードのデプロイ
+
+現在のリポジトリの最新コードを安定版ディレクトリに同期し、サービスを自動再起動します。
+
+```sh
+npm run service:deploy
+```
+
+### サービスの解除(アンインストール)
+
+```sh
+npm run service:uninstall
+```
+
+安定版ディレクトリも完全に削除したい場合は `--purge` を指定します。
+
+```sh
+npm run service:uninstall:purge
+```
+
+※ Windows の場合は、PowerShell またはコマンドプロンプトを「管理者として実行」して実行してください。
+
+ログは `~/.ai-status/server.log`(標準出力)および `~/.ai-status/server.err.log`(エラー出力)に出力されます。
+
 ## 監視するエージェントの選択
 
 画面右上の ⚙ から、監視するエージェントを選べます。選んだ内容は `~/.ai-status/config.json` に保存され、次回の起動でも使われます。外したエージェントのログは読みません。
