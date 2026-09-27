@@ -71,6 +71,13 @@ export function generateLaunchAgentPlist({
 }
 
 /**
+ * Windows 用: バックグラウンド実行用 VBScript 文字列を生成する
+ */
+export function generateVbsScript({ nodePath, serverScript, stdoutPath, stderrPath }) {
+  return `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run "cmd.exe /c """"" & "${nodePath}"" --no-warnings=ExperimentalWarning """ & "${serverScript}"" 1>>""" & "${stdoutPath}"" 2>>""" & "${stderrPath}""""", 0, False\r\n`;
+}
+
+/**
  * ディレクトリを再帰的にコピーする（不要ファイルは除外）
  */
 function copyDirRecursive(
@@ -239,7 +246,7 @@ function installWindows(repoRoot, stableDir) {
 
   // バックグラウンド起動用 vbs スクリプトを生成 (コンソール画面のポップアップ防止)
   const vbsPath = path.join(stableDir, 'run-service.vbs');
-  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """${nodePath}"" --no-warnings=ExperimentalWarning ""${serverScript}"" 1>>""${stdoutPath}"" 2>>""${stderrPath}""", 0, False\r\n`;
+  const vbsContent = generateVbsScript({ nodePath, serverScript, stdoutPath, stderrPath });
   fs.writeFileSync(vbsPath, vbsContent, 'utf8');
 
   // タスクスケジューラに登録 (ログオン時実行)
@@ -260,7 +267,12 @@ function installWindows(repoRoot, stableDir) {
 function restartWindows(stableDir) {
   const vbsPath = path.join(stableDir, 'run-service.vbs');
   try {
-    execSync(`schtasks /end /tn "${SERVICE_LABEL}" 2>nul || true`, { shell: true });
+    execSync(`schtasks /end /tn "${SERVICE_LABEL}"`, { stdio: 'ignore' });
+  } catch {
+    // タスクが未起動等のエラーは安全に無視
+  }
+
+  try {
     execSync(`schtasks /run /tn "${SERVICE_LABEL}"`, { stdio: 'inherit' });
     console.log('サービスを再起動しました。');
   } catch (e) {
@@ -278,7 +290,12 @@ function restartWindows(stableDir) {
  */
 function uninstallWindows() {
   try {
-    execSync(`schtasks /end /tn "${SERVICE_LABEL}" 2>nul || true`, { shell: true });
+    execSync(`schtasks /end /tn "${SERVICE_LABEL}"`, { stdio: 'ignore' });
+  } catch {
+    // タスクが未起動等のエラーは安全に無視
+  }
+
+  try {
     execSync(`schtasks /delete /tn "${SERVICE_LABEL}" /f`, { stdio: 'inherit' });
     console.log('Windows タスクを停止・解除しました。');
   } catch (e) {

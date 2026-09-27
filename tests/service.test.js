@@ -7,6 +7,7 @@ import {
   getLogDir,
   getLaunchAgentPlistPath,
   generateLaunchAgentPlist,
+  generateVbsScript,
 } from '../src/service.js';
 
 describe('service.js', () => {
@@ -57,5 +58,25 @@ describe('service.js', () => {
     assert.ok(plist.includes(`<string>${params.stderrPath}</string>`));
     assert.ok(plist.includes('<key>RunAtLoad</key>\n    <true/>'));
     assert.ok(plist.includes('<key>KeepAlive</key>\n    <true/>'));
+  });
+
+  test('generateVbsScript produces valid VBScript with cmd.exe and correct paths', () => {
+    const params = {
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+      serverScript: 'C:\\Users\\testuser\\AppData\\Roaming\\ai-agent-monitor\\src\\server.js',
+      stdoutPath: 'C:\\Users\\testuser\\.ai-status\\server.log',
+      stderrPath: 'C:\\Users\\testuser\\.ai-status\\server.err.log',
+    };
+
+    const vbs = generateVbsScript(params);
+
+    assert.ok(vbs.includes('Set WshShell = CreateObject("WScript.Shell")'));
+    assert.ok(vbs.includes('cmd.exe /c'));
+    assert.ok(vbs.includes(params.nodePath));
+    assert.ok(vbs.includes(params.serverScript));
+    assert.ok(vbs.includes(params.stdoutPath));
+    assert.ok(vbs.includes(params.stderrPath));
+    assert.ok(vbs.includes('--no-warnings=ExperimentalWarning'));
+    assert.ok(vbs.endsWith(', 0, False\r\n'));
   });
 });
