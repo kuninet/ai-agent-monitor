@@ -6,6 +6,7 @@ import { newCursor, readAppended, readJson } from '../jsonl.js';
 import { agyProcesses, paneKeyOf, processCwds } from '../proc.js';
 import { pendingTextQuestion } from '../textQuestion.js';
 import { TURN_GAP_MS, gapIntervals, mergeIntervals, subtractIntervals } from '../work.js';
+import { resolveProject } from '../project.js';
 
 const HOME = os.homedir();
 const ROOTS = [path.join(HOME, '.gemini', 'antigravity-cli'), path.join(HOME, '.gemini', 'antigravity')];
@@ -72,7 +73,9 @@ function parseAsk(c) {
     const opts = decode(q?.options, 1);
     return {
       text: String(decode(q?.question, 1) ?? ''),
-      options: (Array.isArray(opts) ? opts : []).map((o) => String(typeof o === 'string' ? o : o?.label ?? o?.text ?? '')),
+      options: (Array.isArray(opts) ? opts : []).map((o) =>
+        String(typeof o === 'string' ? o : (o?.label ?? o?.text ?? '')),
+      ),
     };
   });
 }
@@ -95,7 +98,11 @@ function ingest(st, x) {
     rec.text = requestTitle(x.content);
   } else if (x.type === 'PLANNER_RESPONSE') {
     rec.calls = (x.tool_calls ?? []).map((c) => c?.name ?? '?');
-    rec.asks = (x.tool_calls ?? []).filter((c) => c?.name === 'ask_question').map(parseAsk).filter(Boolean).flat();
+    rec.asks = (x.tool_calls ?? [])
+      .filter((c) => c?.name === 'ask_question')
+      .map(parseAsk)
+      .filter(Boolean)
+      .flat();
     if (typeof x.content === 'string' && x.content.trim()) rec.text = x.content;
   }
   // step_index の無い行は上書き対象にしない
@@ -592,13 +599,16 @@ function buildSession(id, brain, cache, sum, pid, now, children = [], liveBy = n
       });
     }
     context = {
-      usedTokens: cu ? (cu.input_tokens ?? 0) + (cu.cache_read_input_tokens ?? 0) + (cu.cache_creation_input_tokens ?? 0) : null,
+      usedTokens: cu
+        ? (cu.input_tokens ?? 0) + (cu.cache_read_input_tokens ?? 0) + (cu.cache_creation_input_tokens ?? 0)
+        : null,
       windowTokens: cw.context_window_size ?? null,
       pct: typeof cw.used_percentage === 'number' ? Math.round(cw.used_percentage * 10) / 10 : null,
     };
   }
 
   const cwd = sum?.cwd ?? sl?.workspace?.current_dir ?? sl?.cwd ?? '';
+  const { projectKey, projectName } = resolveProject(cwd);
   const updatedAt =
     Math.max(st.updatedAt ?? 0, mtimeMs, sum?.lastModified ?? 0, ...children.map((c) => c.updatedAt ?? 0)) || null;
   return {
@@ -607,6 +617,8 @@ function buildSession(id, brain, cache, sum, pid, now, children = [], liveBy = n
     title: sum?.title || st.title || sl?.conversation_title || '',
     cwd,
     project: cwd ? path.basename(cwd) : '',
+    projectKey,
+    projectName,
     branch: null,
     model: sl?.model?.display_name ?? null,
     startedAt: st.startedAt ?? updatedAt,

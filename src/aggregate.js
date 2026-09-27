@@ -2,6 +2,7 @@ import { AGENT_DEFS, AGENT_IDS, agentDef } from './agents.js';
 import { enabledAgents, planMonthlyUSD } from './config.js';
 import { orcaTerminals } from './proc.js';
 import { clippedMs } from './work.js';
+import { resolveProject } from './project.js';
 
 export const RANGES = ['today', '24h', '7d', '30d', 'all'];
 export const AGENTS = ['all', ...AGENT_IDS];
@@ -96,9 +97,7 @@ function subagentRows(s, inRange, since, now) {
       workMs: clippedMs(a.events.work, since, now),
     };
   });
-  rows.sort(
-    (a, b) => SUBAGENT_ORDER[a.status] - SUBAGENT_ORDER[b.status] || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
-  );
+  rows.sort((a, b) => SUBAGENT_ORDER[a.status] - SUBAGENT_ORDER[b.status] || (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   return rows;
 }
 
@@ -162,9 +161,7 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
   const plan = planMonthlyUSD();
   const list = await terminals();
 
-  const picked = all.filter(
-    (s) => (agent === 'all' || s.agent === agent) && (s.live || (s.updatedAt ?? 0) >= since),
-  );
+  const picked = all.filter((s) => (agent === 'all' || s.agent === agent) && (s.live || (s.updatedAt ?? 0) >= since));
   const inRange = (e) => (e.ts ?? 0) >= since;
 
   // agy の usage は直近 1 回分のスナップショットで、リクエストごとの値とは性質が違う。
@@ -239,6 +236,9 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
 
     if (s.status in sessCount) sessCount[s.status]++;
 
+    const pKey = s.projectKey ?? (s.cwd ? resolveProject(s.cwd).projectKey : '');
+    const pName = s.projectName ?? (s.cwd ? resolveProject(s.cwd).projectName : '');
+
     // 未完了タスクの KPI は、終了したセッションの放置タスクを除いて数える
     const active = s.status !== 'ended';
     let openTasks = 0;
@@ -258,6 +258,8 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
         sessionTitle: s.title,
         sessionStatus: s.status,
         project: s.project,
+        projectKey: pKey,
+        projectName: pName,
         id: t.id,
         title: t.title,
         status: t.status,
@@ -273,6 +275,8 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
         sessionId: s.id,
         sessionTitle: s.title,
         project: s.project,
+        projectKey: pKey,
+        projectName: pName,
         ts: q.ts,
         kind: q.kind,
         level: q.level ?? 'question',
@@ -290,6 +294,8 @@ export async function buildSnapshot({ range = 'today', agent = 'all' } = {}) {
       id: s.id,
       title: s.title,
       project: s.project,
+      projectKey: pKey,
+      projectName: pName,
       cwd: s.cwd,
       branch: s.branch,
       model: s.model,

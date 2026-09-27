@@ -7,8 +7,9 @@ Claude Code、Codex、Antigravity CLI(`agy`)の稼働状況を、ローカルの
 - API 換算額、キャッシュ読込率、ツールエラー率、文脈の圧縮、自動続行、作業時間、タスク、未回答の質問を KPI として表示します
 - サブスクリプションの使用枠(5 時間枠・週次枠)と、セッションごとのコンテキスト使用率・開始時刻・作業時間を表示します
 - セッション、サブエージェント、タスク(ID・状態・タイトル・Blocker)、未回答の質問を表で一覧できます
+- セッション表はリポジトリ(git worktree を含む)ごとにまとめて表示できます(「まとめ方: [なし | プロジェクト]」で切り替え)
 - セッションの行をクリックすると、タスクと未回答の質問をそのセッションの分だけに絞り込めます
-- 監視するエージェントは、画面右上の ⚙ から選べます
+- 画面右上の ⚙ から、監視するエージェントの選択やセッション表の列の表示・非表示を切り替えられます(列の表示設定はブラウザごとに保存)
 - 端末管理アプリ Orca で動かしているセッションなら、行の ↗ ボタンでその端末タブに切り替えられます
 
 API キーやネットワーク接続は使いません。手元に残るログを読むだけで、ログへの書き込みもしません。
@@ -155,17 +156,17 @@ agy のタスクは、agy が会話ごとに書く `task.md` から読みます�
 
 ## 読み込むファイル
 
-| 対象 | 場所 |
-|---|---|
-| Claude Code の会話記録 | `~/.claude/projects/**/*.jsonl`(サブエージェントを含む) |
-| Claude Code の実行中セッション | `~/.claude/sessions/*.json` |
-| Claude Code のタスク | `~/.claude/tasks/` と会話記録内の `TaskCreate` / `TaskUpdate` / `TodoWrite` |
-| Codex の会話記録 | `~/.codex/sessions/**/rollout-*.jsonl` |
-| Codex のスレッド一覧 | `~/.codex/state_*.sqlite` |
-| agy の会話記録 | `~/.gemini/antigravity{,-cli}/brain/<id>/.system_generated/logs/transcript.jsonl` |
-| agy のタスク | `~/.gemini/antigravity{,-cli}/brain/<id>/task.md` |
-| agy の会話一覧 | `~/.gemini/antigravity{,-cli}/conversation_summaries.db` |
-| agy の statusline 入力 | `~/.ai-status/agy/<conversation_id>.json` と、あれば `~/.gemini/antigravity-cli/last_statusline_input.json` |
+| 対象                           | 場所                                                                                                        |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Claude Code の会話記録         | `~/.claude/projects/**/*.jsonl`(サブエージェントを含む)                                                     |
+| Claude Code の実行中セッション | `~/.claude/sessions/*.json`                                                                                 |
+| Claude Code のタスク           | `~/.claude/tasks/` と会話記録内の `TaskCreate` / `TaskUpdate` / `TodoWrite`                                 |
+| Codex の会話記録               | `~/.codex/sessions/**/rollout-*.jsonl`                                                                      |
+| Codex のスレッド一覧           | `~/.codex/state_*.sqlite`                                                                                   |
+| agy の会話記録                 | `~/.gemini/antigravity{,-cli}/brain/<id>/.system_generated/logs/transcript.jsonl`                           |
+| agy のタスク                   | `~/.gemini/antigravity{,-cli}/brain/<id>/task.md`                                                           |
+| agy の会話一覧                 | `~/.gemini/antigravity{,-cli}/conversation_summaries.db`                                                    |
+| agy の statusline 入力         | `~/.ai-status/agy/<conversation_id>.json` と、あれば `~/.gemini/antigravity-cli/last_statusline_input.json` |
 
 ダッシュボードが書き込むのは `~/.ai-status/` の中だけです。画面で選んだエージェントを `config.json` に保存します。`last_statusline_input.json` がある場合は、その内容を会話ごとに `~/.ai-status/agy/` へ写し、メールアドレスは保存前に取り除きます。statusline から `src/statusline-save.js` を呼ぶよう設定した場合は、その入力が `~/.ai-status/claude/`(`--agy` 付きなら `~/.ai-status/agy/`)に保存されます。`npm run setup-statusline` は、確認のうえ `~/.claude/settings.json`(`--agy` 付きなら `~/.gemini/antigravity-cli/settings.json`)とそのバックアップ `settings.json.bak` に書き込みます。
 
