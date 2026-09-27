@@ -6,6 +6,7 @@ import { costOf } from '../pricing.js';
 import { pendingTextQuestion } from '../textQuestion.js';
 import { gapIntervals, mergeIntervals } from '../work.js';
 import { pidAlive, paneKeyOf, procStarts } from '../proc.js';
+import { resolveProject } from '../project.js';
 
 const HOME = os.homedir();
 const PROJECTS = path.join(HOME, '.claude', 'projects');
@@ -80,9 +81,7 @@ function toMs(ts) {
 function textOf(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return content
-    .map((b) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text ?? '' : ''))
-    .join('\n');
+  return content.map((b) => (typeof b === 'string' ? b : b?.type === 'text' ? (b.text ?? '') : '')).join('\n');
 }
 
 // ターンの起点になる行: 人の発話、自動のターン、チームメイトからの報告(tool_result や isMeta の行は除く)
@@ -173,7 +172,12 @@ function ingest(st, x, sub) {
     const synthetic = msg.model === '<synthetic>' || x.isApiErrorMessage;
     if (!synthetic && msg.id && msg.usage) {
       const prev = st.usage.get(msg.id);
-      const cand = { ts: prev?.ts ?? ts, model: msg.model ?? prev?.model ?? null, usage: msg.usage, final: msg.stop_reason != null };
+      const cand = {
+        ts: prev?.ts ?? ts,
+        model: msg.model ?? prev?.model ?? null,
+        usage: msg.usage,
+        final: msg.stop_reason != null,
+      };
       if (!prev || betterUsage(cand, prev)) st.usage.set(msg.id, cand);
     }
     if (!synthetic && msg.model && !side) st.model = msg.model;
@@ -210,7 +214,7 @@ function ingest(st, x, sub) {
         if (b.name === 'AskUserQuestion') {
           const qs = (input.questions ?? []).map((q) => ({
             text: String(q?.question ?? ''),
-            options: (q?.options ?? []).map((o) => String(typeof o === 'string' ? o : o?.label ?? '')),
+            options: (q?.options ?? []).map((o) => String(typeof o === 'string' ? o : (o?.label ?? ''))),
           }));
           st.asks.set(b.id, { ts, questions: qs });
         } else if (b.name === 'TaskCreate') {
@@ -322,7 +326,8 @@ function ingest(st, x, sub) {
 
   if (x.type === 'system' && x.subtype === 'compact_boundary' && !side) {
     const m = x.compactMetadata;
-    const dropped = m && typeof m.preTokens === 'number' && typeof m.postTokens === 'number' ? m.preTokens - m.postTokens : null;
+    const dropped =
+      m && typeof m.preTokens === 'number' && typeof m.postTokens === 'number' ? m.preTokens - m.postTokens : null;
     st.compact.push({ ts, droppedTokens: dropped });
   }
 }
@@ -539,7 +544,10 @@ function buildSession(file, st, subs, live, sl, now) {
   for (const { state: s } of ordered) {
     for (const [mid, u] of s.usage) {
       const prev = usageOf.get(mid);
-      if (!prev || (u.final !== prev.final ? u.final : !u.final && (u.usage.output_tokens ?? 0) > (prev.usage.output_tokens ?? 0))) {
+      if (
+        !prev ||
+        (u.final !== prev.final ? u.final : !u.final && (u.usage.output_tokens ?? 0) > (prev.usage.output_tokens ?? 0))
+      ) {
         usageOf.set(mid, u);
       }
     }
@@ -620,7 +628,7 @@ function buildSession(file, st, subs, live, sl, now) {
       id,
       title: f.subject ?? cur?.title ?? '',
       status: f.status ?? cur?.status ?? 'pending',
-      blockedBy: Array.isArray(f.blockedBy) ? f.blockedBy.map(String) : cur?.blockedBy ?? [],
+      blockedBy: Array.isArray(f.blockedBy) ? f.blockedBy.map(String) : (cur?.blockedBy ?? []),
       activeForm: f.activeForm ?? cur?.activeForm,
     });
   }
@@ -654,12 +662,15 @@ function buildSession(file, st, subs, live, sl, now) {
   }
 
   const cwd = st.cwd ?? live?.cwd ?? '';
+  const { projectKey, projectName } = resolveProject(cwd);
   return {
     agent: 'claude',
     id: sessionId,
     title: st.customTitle ?? st.aiTitle ?? st.firstHumanText ?? live?.name ?? '',
     cwd,
     project: cwd ? path.basename(cwd) : '',
+    projectKey,
+    projectName,
     branch: st.branch ?? null,
     model: st.model ?? sl?.data?.model?.id ?? null,
     startedAt: startedAt ?? live?.startedAt ?? null,
@@ -753,7 +764,12 @@ export async function collect({ since = 0 } = {}) {
 
   const rl = latestQuota?.data?.rate_limits;
   const quota = rl
-    ? { plan: null, fiveHour: limitOf(rl.five_hour, now), weekly: limitOf(rl.seven_day, now), updatedAt: Math.round(latestQuota.mtimeMs) }
+    ? {
+        plan: null,
+        fiveHour: limitOf(rl.five_hour, now),
+        weekly: limitOf(rl.seven_day, now),
+        updatedAt: Math.round(latestQuota.mtimeMs),
+      }
     : null;
 
   return { sessions, quota };

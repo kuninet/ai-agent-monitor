@@ -7,6 +7,7 @@ import { newCursor, readAppended } from '../jsonl.js';
 import { codexProcesses } from '../proc.js';
 import { pendingTextQuestion } from '../textQuestion.js';
 import { TURN_GAP_MS, gapIntervals, mergeIntervals, subtractIntervals } from '../work.js';
+import { resolveProject } from '../project.js';
 
 const HOME = os.homedir();
 const CODEX = path.join(HOME, '.codex');
@@ -75,7 +76,7 @@ function parseJson(s) {
 function textOf(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return content.map((c) => (typeof c === 'string' ? c : c?.text ?? '')).join('');
+  return content.map((c) => (typeof c === 'string' ? c : (c?.text ?? ''))).join('');
 }
 
 // session_meta / threads の source を解釈する
@@ -101,7 +102,8 @@ function parseSource(src) {
 
 const EXIT_RE = /Process exited with code (-?\d+)/;
 const EXIT_LINE_RE = /^Exit code: (-?\d+)/m;
-const FAILED_RE = /^(exec_command failed|write_stdin failed|apply_patch verification failed|collab spawn failed|invalid agent id)/;
+const FAILED_RE =
+  /^(exec_command failed|write_stdin failed|apply_patch verification failed|collab spawn failed|invalid agent id)/;
 // 承認の拒否は「exec_command failed ...: CreateProcess { message: "Rejected(\"rejected by user\")" }」の形で返る
 const REJECTED_RE = /Rejected\(\\?"/;
 
@@ -164,7 +166,16 @@ function ingest(st, x) {
         const key = p.turn_id ?? `seq:${st.turnSeq++}`;
         if (!st.turns.has(key)) {
           const start = typeof p.started_at === 'number' ? p.started_at * 1000 : ts;
-          st.turns.set(key, { ts, human: false, completedAt: null, start, end: null, lastTs: ts, times: [], waits: [] });
+          st.turns.set(key, {
+            ts,
+            human: false,
+            completedAt: null,
+            start,
+            end: null,
+            lastTs: ts,
+            times: [],
+            waits: [],
+          });
         }
         st.openTurn = key;
         st.finalMessage = null;
@@ -177,7 +188,9 @@ function ingest(st, x) {
         if (t && t.end == null) t.end = typeof p.completed_at === 'number' ? p.completed_at * 1000 : ts;
         st.openTurn = null;
         st.finalMessage =
-          typeof p.last_agent_message === 'string' && p.last_agent_message.trim() ? { ts, text: p.last_agent_message } : null;
+          typeof p.last_agent_message === 'string' && p.last_agent_message.trim()
+            ? { ts, text: p.last_agent_message }
+            : null;
         break;
       }
       case 'turn_aborted': {
@@ -243,7 +256,7 @@ function ingest(st, x) {
           ts,
           questions: args.questions.map((q) => ({
             text: String(q?.question ?? ''),
-            options: (q?.options ?? []).map((o) => String(typeof o === 'string' ? o : o?.label ?? '')),
+            options: (q?.options ?? []).map((o) => String(typeof o === 'string' ? o : (o?.label ?? ''))),
           })),
         });
       }
@@ -426,7 +439,7 @@ function claimer() {
 function workOf(s, turns, running, now) {
   const out = [];
   for (const t of turns) {
-    const end = t.end ?? (running && t.key === s.openTurn ? now : t.lastTs ?? t.start);
+    const end = t.end ?? (running && t.key === s.openTurn ? now : (t.lastTs ?? t.start));
     const spans = gapIntervals([t.start, ...t.times.filter((x) => x > t.start && x < end), end], TURN_GAP_MS);
     out.push(...subtractIntervals(spans, t.waits));
   }
@@ -496,6 +509,7 @@ function buildSession(node, kids, alive, now) {
 
   const ctx = st.context;
   const cwd = st.cwd ?? th?.cwd ?? '';
+  const { projectKey, projectName } = resolveProject(cwd);
   const updatedAt = Math.max(st.updatedAt ?? 0, ...subagents.map((a) => a.updatedAt ?? 0)) || null;
   return {
     agent: 'codex',
@@ -503,6 +517,8 @@ function buildSession(node, kids, alive, now) {
     title: titleOf(th, mine.firstHumanText),
     cwd,
     project: cwd ? path.basename(cwd) : '',
+    projectKey,
+    projectName,
     branch: st.branch ?? th?.git_branch ?? null,
     model: st.model ?? th?.model ?? null,
     startedAt: st.startedAt,
@@ -634,8 +650,7 @@ export async function collect({ since = 0 } = {}) {
   let quota = null;
   if (latest) {
     const rl = latest.rl;
-    const win = (minutes) =>
-      [rl.primary, rl.secondary].find((w) => w && w.window_minutes === minutes) ?? null;
+    const win = (minutes) => [rl.primary, rl.secondary].find((w) => w && w.window_minutes === minutes) ?? null;
     quota = {
       plan: typeof rl.plan_type === 'string' ? rl.plan_type : null,
       fiveHour: limitOf(win(300), now),
