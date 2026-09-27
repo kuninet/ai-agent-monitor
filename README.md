@@ -68,6 +68,8 @@ npm run service:install
 - **macOS**: `~/Library/LaunchAgents/com.kuninet.ai-agent-monitor.plist` を作成・登録し、ログイン時の自動起動とプロセス監視を開始します。
 - **Windows**: タスクスケジューラに登録し、ログオン時にバックグラウンドで自動起動します。
 
+※ Windows の場合は、PowerShell またはコマンドプロンプトを「管理者として実行」して実行してください。
+
 ### 稼働状態の確認
 
 ```sh
@@ -93,6 +95,14 @@ npm run service:deploy
 ```sh
 npm run service:uninstall
 ```
+
+安定版ディレクトリも完全に削除したい場合は `--purge` を指定します。
+
+```sh
+npm run service:uninstall:purge
+```
+
+※ Windows の場合は、PowerShell またはコマンドプロンプトを「管理者として実行」して実行してください。
 
 ログは `~/.ai-status/server.log`(標準出力)および `~/.ai-status/server.err.log`(エラー出力)に出力されます。
 

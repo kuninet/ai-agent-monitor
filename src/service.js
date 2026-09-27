@@ -258,6 +258,7 @@ function installWindows(repoRoot, stableDir) {
     console.log('Windows タスクを登録・起動しました。');
   } catch (e) {
     console.error(`タスクの登録に失敗しました: ${e.message}`);
+    console.error('※ Windows では、管理者権限の PowerShell またはコマンドプロンプトから実行してください。');
   }
 }
 
@@ -300,7 +301,21 @@ function uninstallWindows() {
     console.log('Windows タスクを停止・解除しました。');
   } catch (e) {
     console.error(`タスクの解除に失敗しました: ${e.message}`);
+    console.error('※ Windows では、管理者権限の PowerShell またはコマンドプロンプトから実行してください。');
   }
+}
+
+/**
+ * 安定版ディレクトリの完全削除（安全チェック付き）
+ */
+export function purgeStableDir(targetDir, rmFn = fs.rmSync) {
+  if (!targetDir || !targetDir.endsWith('ai-agent-monitor')) {
+    console.error('安全上の理由により削除を中止しました: 意図しないディレクトリです。');
+    return false;
+  }
+  rmFn(targetDir, { recursive: true, force: true });
+  console.log(`安定版ディレクトリを削除しました: ${targetDir}`);
+  return true;
 }
 
 /**
@@ -389,6 +404,14 @@ export function runServiceCli(args = process.argv.slice(2)) {
         uninstallWindows();
       } else {
         console.log('この OS では手動で解除してください。');
+      }
+
+      if (args.includes('--purge')) {
+        purgeStableDir(stableDir);
+      } else {
+        console.log(
+          `※ 安定版ディレクトリ (${stableDir}) は保持されています。完全に削除したい場合は --purge を指定して実行してください。`,
+        );
       }
       break;
     }

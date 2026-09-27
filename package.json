@@ -25,6 +25,7 @@
     "service:restart": "node src/service.js restart",
     "service:deploy": "node src/service.js deploy",
     "service:uninstall": "node src/service.js uninstall",
+    "service:uninstall:purge": "node src/service.js uninstall --purge",
     "prepare": "husky"
   },
   "devDependencies": {

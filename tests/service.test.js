@@ -8,6 +8,7 @@ import {
   getLaunchAgentPlistPath,
   generateLaunchAgentPlist,
   generateVbsScript,
+  purgeStableDir,
 } from '../src/service.js';
 
 describe('service.js', () => {
@@ -78,5 +79,57 @@ describe('service.js', () => {
     assert.ok(vbs.includes(params.stderrPath));
     assert.ok(vbs.includes('--no-warnings=ExperimentalWarning'));
     assert.ok(vbs.endsWith(', 0, False\r\n'));
+  });
+
+  describe('purgeStableDir', () => {
+    test('末尾が ai-agent-monitor でない場合は削除を中止して false を返す', () => {
+      let called = false;
+      const mockRm = () => {
+        called = true;
+      };
+
+      const invalidPaths = [
+        '/Users/testuser',
+        '/',
+        'C:\\Users\\testuser',
+        '',
+        null,
+        undefined,
+        '/Users/testuser/other-dir',
+      ];
+
+      const originalError = console.error;
+      console.error = () => {};
+      try {
+        for (const p of invalidPaths) {
+          called = false;
+          const result = purgeStableDir(p, mockRm);
+          assert.equal(result, false);
+          assert.equal(called, false);
+        }
+      } finally {
+        console.error = originalError;
+      }
+    });
+
+    test('末尾が ai-agent-monitor の場合は削除を実行して true を返す', () => {
+      const calls = [];
+      const mockRm = (target, options) => {
+        calls.push({ target, options });
+      };
+
+      const validPath = '/Users/testuser/.local/share/ai-agent-monitor';
+      const originalLog = console.log;
+      console.log = () => {};
+      try {
+        const result = purgeStableDir(validPath, mockRm);
+        assert.equal(result, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].target, validPath);
+        assert.deepEqual(calls[0].options, { recursive: true, force: true });
+      } finally {
+        console.log = originalLog;
+      }
+    });
   });
 });
