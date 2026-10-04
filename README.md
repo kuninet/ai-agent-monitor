@@ -132,6 +132,8 @@ Claude Code → statusline-save.js --tee → 今の statusline のスクリプ�
 
 保存に失敗しても何も出力せず正常終了するので、statusline の表示は妨げません。
 
+使用枠は、アカウントを 1 つだけ使っている前提で、保存したファイルの中から最も新しい枠の値を選んで表示します。`/login` でアカウントを切り替えて使うと、別のアカウントの値が混ざることがあります。
+
 #### 手で設定する場合
 
 statusline を使っている場合は、今の `command` の前に `node /path/to/ai-agent-monitor/src/statusline-save.js --tee | ` を付けます(`/path/to/ai-agent-monitor` はこのリポジトリの場所に読み替えてください)。
