@@ -14,6 +14,10 @@ const SESSIONS = path.join(HOME, '.claude', 'sessions');
 const TASKS = path.join(HOME, '.claude', 'tasks');
 const STATUSLINE = path.join(HOME, '.ai-status', 'claude');
 
+// 使用枠の長さ。resets_at がこれより先(+ 余裕)の値は、壊れた値とみなして使わない
+const QUOTA_WINDOW_MS = { five_hour: 5 * 60 * 60_000, seven_day: 7 * 24 * 60 * 60_000 };
+const QUOTA_RESET_SLACK_MS = 60 * 60_000;
+
 const RUNNING_GRACE_MS = 90_000;
 const SUBAGENT_RUNNING_MS = 10 * 60_000;
 // stop_reason が null で tool_use も無い状態は、応答の生成途中(thinking / text を書いた直後)でも起きる。
@@ -425,10 +429,9 @@ function taskDirOverlay(sessionId) {
   return out;
 }
 
-// statusline 保存ファイル: sessionId → {data, mtimeMs}。rate_limits 用に最新のものも返す
+// statusline 保存ファイル: sessionId → {data, mtimeMs}
 function statuslines() {
   const bySession = new Map();
-  let latestQuota = null;
   for (const e of safeReaddir(STATUSLINE)) {
     if (!e.isFile() || !e.name.endsWith('.json')) continue;
     const file = path.join(STATUSLINE, e.name);
@@ -436,15 +439,70 @@ function statuslines() {
     if (!data) continue;
     const mtimeMs = mtimeOf(file);
     bySession.set(e.name.slice(0, -5), { data, mtimeMs });
-    if (data.rate_limits && (!latestQuota || mtimeMs > latestQuota.mtimeMs)) latestQuota = { data, mtimeMs };
   }
-  return { bySession, latestQuota };
+  return { bySession };
 }
 
 function limitOf(r, now) {
   if (!r || typeof r.used_percentage !== 'number') return null;
   const resetsAt = typeof r.resets_at === 'number' ? r.resets_at * 1000 : null;
   return { pct: r.used_percentage, resetsAt, stale: resetsAt != null && resetsAt < now };
+}
+
+// 更新時刻ではなく値で選ぶ。止まっているセッションの statusline が描き直されると、古い値のファイルの更新時刻だけが新しくなるため
+// 同じ枠(resets_at)の中では使用率は減らないので、大きい方が新しい
+export function pickClaudeQuota(entries, now) {
+  let hasAnyRateLimits = false;
+  let maxAnyMtime = -Infinity;
+  let bestFive = null;
+  let bestSeven = null;
+
+  function isBetter(cand, current) {
+    if (!current) return true;
+    const cResets = typeof cand.val.resets_at === 'number' ? cand.val.resets_at : -Infinity;
+    const curResets = typeof current.val.resets_at === 'number' ? current.val.resets_at : -Infinity;
+    if (cResets !== curResets) return cResets > curResets;
+    if (cand.val.used_percentage !== current.val.used_percentage) {
+      return cand.val.used_percentage > current.val.used_percentage;
+    }
+    return cand.mtimeMs > current.mtimeMs;
+  }
+
+  for (const e of entries) {
+    const rl = e?.data?.rate_limits;
+    if (rl != null) {
+      hasAnyRateLimits = true;
+      const m = typeof e.mtimeMs === 'number' ? e.mtimeMs : 0;
+      if (m > maxAnyMtime) maxAnyMtime = m;
+
+      const check = (val, key, current) => {
+        if (typeof val?.used_percentage !== 'number') return current;
+        if (
+          typeof val.resets_at === 'number' &&
+          val.resets_at * 1000 > now + QUOTA_WINDOW_MS[key] + QUOTA_RESET_SLACK_MS
+        ) {
+          return current;
+        }
+        const cand = { val, mtimeMs: m };
+        return isBetter(cand, current) ? cand : current;
+      };
+
+      bestFive = check(rl.five_hour, 'five_hour', bestFive);
+      bestSeven = check(rl.seven_day, 'seven_day', bestSeven);
+    }
+  }
+
+  if (!hasAnyRateLimits) return null;
+
+  const pickedMtimes = [bestFive?.mtimeMs, bestSeven?.mtimeMs].filter((t) => t != null);
+  const updatedAt = Math.round(pickedMtimes.length > 0 ? Math.max(...pickedMtimes) : maxAnyMtime);
+
+  return {
+    plan: null,
+    fiveHour: bestFive ? limitOf(bestFive.val, now) : null,
+    weekly: bestSeven ? limitOf(bestSeven.val, now) : null,
+    updatedAt,
+  };
 }
 
 function usageEvent(u) {
@@ -691,7 +749,7 @@ function buildSession(file, st, subs, live, sl, now) {
 export async function collect({ since = 0 } = {}) {
   const now = Date.now();
   const live = await liveSessions();
-  const { bySession, latestQuota } = statuslines();
+  const { bySession } = statuslines();
 
   const sessions = [];
   const seen = new Set();
@@ -762,15 +820,7 @@ export async function collect({ since = 0 } = {}) {
   );
   for (const k of paneKeyCache.keys()) if (!liveKeys.has(k)) paneKeyCache.delete(k);
 
-  const rl = latestQuota?.data?.rate_limits;
-  const quota = rl
-    ? {
-        plan: null,
-        fiveHour: limitOf(rl.five_hour, now),
-        weekly: limitOf(rl.seven_day, now),
-        updatedAt: Math.round(latestQuota.mtimeMs),
-      }
-    : null;
+  const quota = pickClaudeQuota(bySession.values(), now);
 
   return { sessions, quota };
 }
